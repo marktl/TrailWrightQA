@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 
 export * from './config.js';
+export * from './tests.js';
 
 export async function initStorage(dataDir: string): Promise<void> {
   const testsDir = path.join(dataDir, 'tests');
