@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest",
+    "test:ui": "vitest --ui"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -18,6 +20,7 @@
     "@types/node": "^24.9.1",
     "nodemon": "^3.1.10",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.4"
   }
 }
