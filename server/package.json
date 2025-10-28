@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.67.0",
     "@google/generative-ai": "^0.24.1",
+    "@playwright/test": "^1.56.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
