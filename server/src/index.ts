@@ -5,6 +5,7 @@ import { initStorage } from './storage/index.js';
 import { ensurePlaywrightConfig } from './playwright/config.js';
 import testsRouter from './routes/tests.js';
 import runsRouter from './routes/runs.js';
+import configRouter from './routes/config.js';
 
 const app = express();
 
@@ -24,6 +25,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/tests', testsRouter);
 app.use('/api/runs', runsRouter);
+app.use('/api/config', configRouter);
 
 app.listen(CONFIG.PORT, () => {
   console.log(`🚀 TrailWright server running on http://localhost:${CONFIG.PORT}`);
