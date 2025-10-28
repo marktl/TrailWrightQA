@@ -10,9 +10,12 @@
     "test:ui": "vitest --ui"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.67.0",
+    "@google/generative-ai": "^0.24.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "openai": "^6.7.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
