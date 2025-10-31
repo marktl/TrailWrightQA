@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import type { Test, TestMetadata } from '../../shared/types.js';
+import type { Test, TestMetadata } from '../types.js';
 
 const METADATA_DELIMITER = '// === TRAILWRIGHT_METADATA ===';
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { initStorage, loadConfig, saveConfig, saveTest, loadTest, listTests } from '../index.js';
+import type { Config } from '../config.js';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -30,7 +31,7 @@ describe('Storage', () => {
   it('should save and load config', async () => {
     await initStorage(testDataDir);
 
-    const config = { apiProvider: 'openai', apiKey: 'sk-test' };
+    const config: Partial<Config> = { apiProvider: 'openai', apiKey: 'sk-test' };
     await saveConfig(testDataDir, config);
 
     const loaded = await loadConfig(testDataDir);

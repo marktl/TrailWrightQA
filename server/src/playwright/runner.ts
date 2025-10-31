@@ -1,136 +1,182 @@
-import { spawn } from 'child_process';
+import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
-import type { RunResult } from '../../shared/types.js';
+import type { RunResult } from '../types.js';
+import { resolveNpxInvocation } from '../utils/npx.js';
 
 export interface RunTestOptions {
   dataDir: string;
   testId: string;
 }
 
-export async function runTest(options: RunTestOptions): Promise<RunResult> {
-  const { dataDir, testId } = options;
-  const testFile = path.join(dataDir, 'tests', `${testId}.spec.ts`);
+export interface RunExecutionContext {
+  dataDir: string;
+  testId: string;
+  testFile: string;
+  runId: string;
+  runDir: string;
+  startTime: number;
+}
 
-  // Create run ID
+export interface FinalizeRunOptions {
+  terminated?: boolean;
+  terminationReason?: string;
+}
+
+const ARTIFACT_EXTENSIONS = ['.zip', '.webm', '.png'];
+
+export async function createRunExecutionContext(
+  dataDir: string,
+  testId: string
+): Promise<RunExecutionContext> {
   const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}_${testId}`;
   const runDir = path.join(dataDir, 'runs', runId);
-  await fs.mkdir(runDir, { recursive: true });
+  const testFile = path.join(dataDir, 'tests', `${testId}.spec.ts`);
 
-  const startTime = Date.now();
+  await fs.mkdir(runDir, { recursive: true });
+  await fs.mkdir(path.join(dataDir, 'runs', 'latest'), { recursive: true });
+
+  return {
+    dataDir,
+    testId,
+    testFile,
+    runId,
+    runDir,
+    startTime: Date.now()
+  };
+}
+
+export async function finalizeRunExecution(
+  context: RunExecutionContext,
+  exitCode: number | null,
+  stderr: string,
+  options: FinalizeRunOptions = {}
+): Promise<RunResult> {
+  const endTime = Date.now();
+  const duration = endTime - context.startTime;
+
+  // Attempt to parse Playwright JSON output
+  const resultsPath = path.join(context.dataDir, 'runs', 'latest', 'results.json');
+  let playwrightResults: any = null;
+
+  try {
+    const resultsContent = await fs.readFile(resultsPath, 'utf-8');
+    playwrightResults = JSON.parse(resultsContent);
+  } catch {
+    // Ignore JSON parse failures – happens on early termination
+  }
+
+  // Move generated artifacts into run directory
+  const latestDir = path.join(context.dataDir, 'runs', 'latest');
+  try {
+    const files = await fs.readdir(latestDir);
+    await Promise.all(
+      files
+        .filter((file) => ARTIFACT_EXTENSIONS.some((ext) => file.endsWith(ext)))
+        .map((file) =>
+          fs.rename(path.join(latestDir, file), path.join(context.runDir, file)).catch(() => void 0)
+        )
+    );
+  } catch {
+    // Ignore if there is no latest directory or artifacts
+  }
+
+  let status: RunResult['status'] = 'passed';
+  let error: string | undefined;
+
+  if (options.terminated) {
+    status = 'stopped';
+    error = options.terminationReason || 'Run terminated by user';
+  } else if (playwrightResults?.suites) {
+    const suites = playwrightResults.suites ?? [];
+    const specs = suites.flatMap((suite: any) => suite.specs ?? []);
+
+    const failingSpec = specs.find((spec: any) =>
+      spec.tests?.some((test: any) =>
+        test.results?.some((result: any) => result.status === 'failed')
+      )
+    );
+
+    if (failingSpec) {
+      status = 'failed';
+      const failingResult =
+        failingSpec.tests?.[0]?.results?.find((result: any) => result.status === 'failed') ?? null;
+      error =
+        failingResult?.error?.message ||
+        failingResult?.error?.value ||
+        'Test failed – see Playwright trace for details';
+    } else {
+      status = 'passed';
+    }
+  } else if (exitCode !== 0) {
+    status = 'failed';
+    error = stderr || 'Test execution failed';
+  }
+
+  // Locate trace artifact if present
+  let tracePath: string | undefined;
+  try {
+    const runFiles = await fs.readdir(context.runDir);
+    const traceFile = runFiles.find((file) => file.endsWith('.zip'));
+    if (traceFile) {
+      tracePath = path.join(context.runDir, traceFile);
+    }
+  } catch {
+    // Ignore trace discovery errors
+  }
+
+  const result: RunResult = {
+    id: context.runId,
+    testId: context.testId,
+    status,
+    duration,
+    startedAt: new Date(context.startTime).toISOString(),
+    endedAt: new Date(endTime).toISOString(),
+    tracePath,
+    error
+  };
+
+  await fs.writeFile(path.join(context.runDir, 'result.json'), JSON.stringify(result, null, 2));
+
+  return result;
+}
+
+export async function runTest(options: RunTestOptions): Promise<RunResult> {
+  const context = await createRunExecutionContext(options.dataDir, options.testId);
+  const npx = await resolveNpxInvocation();
+  const baseEnv = npx.env ?? process.env;
+
+  // Use relative path from dataDir since that's our cwd
+  // Normalize to forward slashes for cross-platform compatibility
+  const relativeTestPath = path.relative(context.dataDir, context.testFile).replace(/\\/g, '/');
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('npx', [
-      'playwright', 'test',
-      testFile,
-      '--reporter=json'
-    ], {
-      cwd: dataDir,
-      env: { ...process.env }
-    });
+    const proc: ChildProcessWithoutNullStreams = spawn(
+      npx.command,
+      [...npx.argsPrefix, 'playwright', 'test', relativeTestPath, '--headed'],
+      {
+        cwd: context.dataDir,
+        env: { ...baseEnv }
+      }
+    );
 
-    let stdout = '';
     let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
 
     proc.stderr.on('data', (data) => {
       stderr += data.toString();
     });
 
     proc.on('close', async (code) => {
-      const endTime = Date.now();
-      const duration = endTime - startTime;
-
       try {
-        // Parse Playwright JSON output
-        const resultsPath = path.join(dataDir, 'runs', 'latest', 'results.json');
-        let playwrightResults: any;
-
-        try {
-          const resultsContent = await fs.readFile(resultsPath, 'utf-8');
-          playwrightResults = JSON.parse(resultsContent);
-        } catch (err) {
-          playwrightResults = null;
-        }
-
-        // Move artifacts to run directory
-        const latestDir = path.join(dataDir, 'runs', 'latest');
-        try {
-          const files = await fs.readdir(latestDir);
-          for (const file of files) {
-            if (file.endsWith('.zip') || file.endsWith('.webm') || file.endsWith('.png')) {
-              await fs.rename(
-                path.join(latestDir, file),
-                path.join(runDir, file)
-              );
-            }
-          }
-        } catch (err) {
-          // Ignore if no artifacts
-        }
-
-        // Determine status
-        let status: 'passed' | 'failed' | 'skipped' = 'passed';
-        let error: string | undefined;
-
-        if (playwrightResults?.suites) {
-          const tests = playwrightResults.suites.flatMap((s: any) => s.specs || []);
-          const failed = tests.some((t: any) =>
-            t.tests?.some((test: any) =>
-              test.results?.some((r: any) => r.status === 'failed')
-            )
-          );
-
-          if (failed) {
-            status = 'failed';
-            const failedTest = tests.find((t: any) =>
-              t.tests?.some((test: any) =>
-                test.results?.some((r: any) => r.status === 'failed')
-              )
-            );
-            error = failedTest?.tests?.[0]?.results?.[0]?.error?.message || 'Test failed';
-          }
-        } else if (code !== 0) {
-          status = 'failed';
-          error = stderr || 'Test execution failed';
-        }
-
-        // Find trace file
-        let tracePath: string | undefined;
-        try {
-          const runFiles = await fs.readdir(runDir);
-          const traceFile = runFiles.find(f => f.endsWith('.zip'));
-          if (traceFile) {
-            tracePath = path.join(runDir, traceFile);
-          }
-        } catch (err) {
-          // No trace
-        }
-
-        const result: RunResult = {
-          id: runId,
-          testId,
-          status,
-          duration,
-          startedAt: new Date(startTime).toISOString(),
-          endedAt: new Date(endTime).toISOString(),
-          tracePath,
-          error
-        };
-
-        // Save result.json
-        await fs.writeFile(
-          path.join(runDir, 'result.json'),
-          JSON.stringify(result, null, 2)
-        );
-
+        const result = await finalizeRunExecution(context, code, stderr);
         resolve(result);
-      } catch (err: any) {
-        reject(new Error(`Failed to process test results: ${err.message}`));
+      } catch (error: any) {
+        reject(new Error(`Failed to process test results: ${error.message}`));
       }
+    });
+
+    proc.on('error', (error) => {
+      reject(error);
     });
   });
 }
@@ -149,8 +195,8 @@ export async function listRuns(dataDir: string, testId?: string): Promise<RunRes
 
     const runs = await Promise.all(
       runDirs
-        .filter(dir => dir !== 'latest')
-        .map(async (dir) => {
+        .filter((dir) => dir !== 'latest')
+        .map(async (dir): Promise<RunResult | null> => {
           try {
             const result = await getRunResult(dataDir, dir);
             return result;
@@ -160,18 +206,18 @@ export async function listRuns(dataDir: string, testId?: string): Promise<RunRes
         })
     );
 
-    const validRuns = runs.filter((r): r is RunResult => r !== null);
+    const validRuns = runs.filter((run): run is RunResult => run !== null);
 
     if (testId) {
       return validRuns
-        .filter(r => r.testId === testId)
+        .filter((run) => run.testId === testId)
         .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
     }
 
-    return validRuns.sort((a, b) =>
-      new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+    return validRuns.sort(
+      (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
     );
-  } catch (err) {
+  } catch {
     return [];
   }
 }
