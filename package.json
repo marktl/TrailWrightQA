@@ -9,16 +9,28 @@
     "dev:client": "cd client && npm run dev",
     "build": "npm run build:server && npm run build:client",
     "build:server": "cd server && npm run build",
-    "build:client": "cd client && npm run build"
+    "build:client": "cd client && npm run build",
+    "qa:verify": "node scripts/qa-verify.mjs",
+    "fix:auto": "node scripts/auto-fix.mjs"
   },
-  "keywords": ["playwright", "testing", "ai", "qa"],
+  "keywords": [
+    "playwright",
+    "testing",
+    "ai",
+    "qa"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "@executeautomation/playwright-mcp-server": "^1.0.6",
     "@types/node": "^24.9.1",
     "concurrently": "^9.2.1",
+    "node": "^18.20.4",
     "playwright": "^1.56.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
   }
 }

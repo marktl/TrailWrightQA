@@ -80,3 +80,4 @@ docs/
 nul
 
 scripts/
+package-lock.json
