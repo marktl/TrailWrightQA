@@ -24,8 +24,6 @@ pnpm-debug.log*
 
 # Claude Code settings (keep project CLAUDE.md but exclude personal settings)
 claude/
-.claude/settings.json
-.claude/settings.local.json
 
 # IDE and editor files
 .vscode/
