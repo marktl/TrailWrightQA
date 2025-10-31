@@ -1,10 +1,82 @@
+# Dependencies
 node_modules/
-dist/
-.env
-.env.local
-*.log
-.DS_Store
-client/dist/
 client/node_modules/
 server/node_modules/
+
+# Build outputs
+dist/
+client/dist/
+server/dist/
+build/
+
+# Environment files
+.env
+.env.local
+.env*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.jsonl
+
+# Claude Code settings (keep project CLAUDE.md but exclude personal settings)
+*claude/
+.claude/settings.json
+.claude/settings.local.json
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
 nul
+
+# Test artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+*.trace.zip
+screenshots/
+videos/
+
+# Temporary files
+temp-*
+tmp/
+*.tmp
+*.bak
+*.swp
+
+# NPM patches (if temporary)
+patches/
+
+# Coverage
+coverage/
+*.lcov
+.nyc_output/
+
+#docs
+docs/
+
+nul
+
+scripts/
