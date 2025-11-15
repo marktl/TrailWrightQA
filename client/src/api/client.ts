@@ -18,8 +18,15 @@ export type ApiTestMetadata = {
   description?: string;
   prompt?: string;
   tags?: string[];
+  steps?: ApiTestStepMetadata[];
   createdAt: string;
   updatedAt?: string;
+};
+
+export type ApiTestStepMetadata = {
+  number: number;
+  qaSummary: string;
+  playwrightCode: string;
 };
 
 export type ApiTest = {
@@ -90,10 +97,10 @@ export const api = {
     fetchApi<{ success: boolean; filePath: string; message: string }>(`/tests/${id}/edit`, {
       method: 'POST'
     }),
-  runTest: (testId: string) =>
+  runTest: (testId: string, options?: { headed?: boolean; speed?: number }) =>
     fetchApi<{ runId: string }>('/runs', {
       method: 'POST',
-      body: JSON.stringify({ testId })
+      body: JSON.stringify({ testId, ...(options ?? {}) })
     }),
   listRuns: (testId?: string) =>
     fetchApi<{ runs: any[] }>(`/runs${testId ? `?testId=${testId}` : ''}`),
@@ -142,6 +149,64 @@ export const api = {
     fetchApi<{ state: LiveGenerationState }>(`/generate/${sessionId}/state`),
   stopGeneration: (sessionId: string) =>
     fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/stop`, {
+      method: 'POST'
+    }),
+  restartGeneration: (sessionId: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/restart`, {
+      method: 'POST'
+    }),
+  pauseGeneration: (sessionId: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/pause`, {
+      method: 'POST'
+    }),
+  resumeGeneration: (sessionId: string, userCorrection?: string) => {
+    const body = userCorrection?.trim()
+      ? JSON.stringify({ userCorrection: userCorrection.trim() })
+      : JSON.stringify({});
+
+    return fetchApi<{ success: boolean; state: LiveGenerationState }>(
+      `/generate/${sessionId}/resume`,
+      {
+        method: 'POST',
+        body
+      }
+    );
+  },
+  updateGenerationGoal: (sessionId: string, goal: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/goal`, {
+      method: 'PATCH',
+      body: JSON.stringify({ goal })
+    }),
+  updateGenerationSuccessCriteria: (sessionId: string, successCriteria: string | undefined) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(
+      `/generate/${sessionId}/success-criteria`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ successCriteria })
+      }
+    ),
+  updateGenerationMaxSteps: (sessionId: string, maxSteps: number) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/max-steps`, {
+      method: 'PATCH',
+      body: JSON.stringify({ maxSteps })
+    }),
+  sendGenerationChat: (sessionId: string, message: string) =>
+    fetchApi<{ success: boolean; chat: ChatMessage[]; state: LiveGenerationState }>(
+      `/generate/${sessionId}/chat`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ message })
+      }
+    ),
+  deleteGenerationStep: (sessionId: string, stepNumber: number) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(
+      `/generate/${sessionId}/steps/${stepNumber}`,
+      {
+        method: 'DELETE'
+      }
+    ),
+  getSuggestedTestName: (sessionId: string) =>
+    fetchApi<{ suggestedName: string }>(`/generate/${sessionId}/suggest-name`, {
       method: 'POST'
     }),
   saveGeneratedTest: (

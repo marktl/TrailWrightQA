@@ -50,12 +50,16 @@ export class LiveRunSession {
   private logCounter = 0;
   private readonly startedAt: string;
   private updatedAt: string;
+  private readonly options: RunExecutionContext['options'];
+  private softPaused = false;
+  private pausedEventQueue: LiveRunEvent[] = [];
 
   constructor(context: RunExecutionContext, proc: ChildProcessWithoutNullStreams) {
     this.context = context;
     this.process = proc;
     this.startedAt = new Date(context.startTime).toISOString();
     this.updatedAt = this.startedAt;
+    this.options = context.options;
     this.emitter.setMaxListeners(100);
 
     this.attachProcessListeners();
@@ -81,7 +85,11 @@ export class LiveRunSession {
       logs: [...this.logs],
       steps: [...this.steps],
       chat: [...this.chat],
-      result: this.result
+      result: this.result,
+      options: {
+        headed: this.options.headed,
+        speed: this.options.speed
+      }
     };
   }
 
@@ -100,49 +108,37 @@ export class LiveRunSession {
       timestamp: new Date().toISOString()
     };
     this.chat.push(chatMessage);
-    this.emit({ type: 'chat', payload: chatMessage });
+    this.emit({ type: 'chat', payload: chatMessage }, true);
     this.touch();
     return chatMessage;
   }
 
   pause(): void {
-    if (!this.process) {
-      throw new Error('Run has already completed');
-    }
-    if (process.platform === 'win32') {
-      throw new Error('Pause is not supported on Windows');
-    }
     if (this.status !== 'running') {
       throw new Error('Run is not currently running');
     }
-
-    const paused = this.process.kill('SIGSTOP');
-    if (!paused) {
-      throw new Error('Unable to pause Playwright process');
+    if (this.softPaused) {
+      return;
     }
 
+    this.softPaused = true;
     this.updateStatus('paused');
-    this.appendLog('system', 'Run paused');
+    this.appendLog('system', 'Run paused - browser remains open for inspection', true);
   }
 
   resume(): void {
-    if (!this.process) {
-      throw new Error('Run has already completed');
-    }
-    if (process.platform === 'win32') {
-      throw new Error('Pause is not supported on Windows');
-    }
     if (this.status !== 'paused') {
       throw new Error('Run is not paused');
     }
 
-    const resumed = this.process.kill('SIGCONT');
-    if (!resumed) {
-      throw new Error('Unable to resume Playwright process');
+    if (!this.softPaused) {
+      return;
     }
 
+    this.softPaused = false;
     this.updateStatus('running');
-    this.appendLog('system', 'Run resumed');
+    this.appendLog('system', 'Run resumed', true);
+    this.flushPausedEvents();
   }
 
   async stop(): Promise<void> {
@@ -163,6 +159,8 @@ export class LiveRunSession {
     }
 
     this.updateStatus('stopped');
+    this.softPaused = false;
+    this.flushPausedEvents();
   }
 
   private attachProcessListeners(): void {
@@ -202,6 +200,8 @@ export class LiveRunSession {
       );
       this.result = result;
       this.process = null;
+      this.softPaused = false;
+      this.flushPausedEvents();
 
       if (result.status === 'passed') {
         this.updateStatus('completed');
@@ -350,7 +350,7 @@ export class LiveRunSession {
     this.touch();
   }
 
-  private appendLog(stream: RunLogEntry['stream'], message: string): void {
+  private appendLog(stream: RunLogEntry['stream'], message: string, force = false): void {
     const entry: RunLogEntry = {
       id: `log-${++this.logCounter}`,
       timestamp: new Date().toISOString(),
@@ -358,7 +358,7 @@ export class LiveRunSession {
       message
     };
     this.logs.push(entry);
-    this.emit({ type: 'log', payload: entry });
+    this.emit({ type: 'log', payload: entry }, force);
     this.touch();
   }
 
@@ -367,12 +367,27 @@ export class LiveRunSession {
       return;
     }
     this.status = status;
-    this.emit({ type: 'status', payload: { status, timestamp: new Date().toISOString() } });
+    this.emit({ type: 'status', payload: { status, timestamp: new Date().toISOString() } }, true);
     this.touch();
   }
 
-  private emit(event: LiveRunEvent): void {
+  private emit(event: LiveRunEvent, force = false): void {
+    if (this.softPaused && !force) {
+      this.pausedEventQueue.push(event);
+      return;
+    }
     this.emitter.emit('event', event);
+  }
+
+  private flushPausedEvents(): void {
+    if (this.pausedEventQueue.length === 0) {
+      return;
+    }
+    const events = [...this.pausedEventQueue];
+    this.pausedEventQueue.length = 0;
+    for (const event of events) {
+      this.emitter.emit('event', event);
+    }
   }
 
   private touch(): void {
@@ -382,9 +397,10 @@ export class LiveRunSession {
 
 export async function startLiveRun(
   dataDir: string,
-  testId: string
+  testId: string,
+  preferences?: { headed?: boolean; speed?: number }
 ): Promise<LiveRunSession> {
-  const context = await createRunExecutionContext(dataDir, testId);
+  const context = await createRunExecutionContext(dataDir, testId, preferences);
   const npx = await resolveNpxInvocation();
   const baseEnv = npx.env ?? process.env;
 
@@ -394,18 +410,21 @@ export async function startLiveRun(
 
   console.log(`[liveRun] Executing: playwright test ${relativeTestPath} from ${context.dataDir}`);
 
-  const proc = spawn(
-    npx.command,
-    [...npx.argsPrefix, 'playwright', 'test', relativeTestPath, '--workers=1', '--headed'],
-    {
-      cwd: context.dataDir,
-      env: {
-        ...baseEnv,
-        TRAILWRIGHT_RUN_ID: context.runId,
-        PLAYWRIGHT_JUNIT_OUTPUT_NAME: `trailwright-${context.runId}.xml`
-      }
+  const args = [...npx.argsPrefix, 'playwright', 'test', relativeTestPath, '--workers=1'];
+  if (context.options.headed) {
+    args.push('--headed');
+  }
+
+  const proc = spawn(npx.command, args, {
+    cwd: context.dataDir,
+    env: {
+      ...baseEnv,
+      TRAILWRIGHT_RUN_ID: context.runId,
+      TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
+      TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
+      PLAYWRIGHT_JUNIT_OUTPUT_NAME: `trailwright-${context.runId}.xml`
     }
-  );
+  });
 
   const session = new LiveRunSession(context, proc);
   sessions.set(session.id, session);

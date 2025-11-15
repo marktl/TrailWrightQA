@@ -12,12 +12,17 @@ const config = {
   testDir: './tests',
   timeout: 45000,
   retries: 1,
-  use: {
-    headless: false,
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
-  },
+  use: (() => {
+    const headless = process.env.TRAILWRIGHT_HEADLESS === 'true';
+    const slowMo = Number.parseInt(process.env.TRAILWRIGHT_SLOWMO ?? '0', 10) || 0;
+    return {
+      headless,
+      slowMo,
+      trace: 'retain-on-failure',
+      screenshot: 'on', // Capture screenshots for every run (supports reporting/export)
+      video: 'retain-on-failure', // Retain videos only when failures occur to control storage
+    };
+  })(),
   reporter: [
     ['list', { printSteps: true }],
     ['html', { outputFolder: 'runs/latest/html-report', open: 'never' }],

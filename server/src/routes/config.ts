@@ -19,7 +19,14 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    await saveConfig(CONFIG.DATA_DIR, req.body);
+    const updates = { ...req.body };
+
+    // If apiKey looks masked (starts with ***), don't update it
+    if (updates.apiKey && updates.apiKey.startsWith('***')) {
+      delete updates.apiKey;
+    }
+
+    await saveConfig(CONFIG.DATA_DIR, updates);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -5,6 +5,7 @@ export interface Config {
   apiProvider: 'anthropic' | 'openai' | 'gemini';
   apiKey: string;
   defaultBrowser?: 'chromium' | 'firefox' | 'webkit';
+  defaultStartUrl?: string;
   baseUrl?: string;
 }
 

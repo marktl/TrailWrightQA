@@ -70,6 +70,7 @@ export default function RunSession() {
   const [pendingAction, setPendingAction] = useState<RunControlAction | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
+  const [logsExpanded, setLogsExpanded] = useState(true);
 
   const logsRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -213,24 +214,40 @@ export default function RunSession() {
     };
   }, [runId, handleStreamEvent]);
 
+  const currentStatus = run?.status ?? 'queued';
+  const canControl = currentStatus === 'running' || currentStatus === 'paused';
+
+  const logItems = useMemo(() => run?.logs ?? [], [run?.logs]);
+  const chatItems = useMemo(() => run?.chat ?? [], [run?.chat]);
+  const scriptedSteps = useMemo(
+    () => (testMetadata?.steps ? [...testMetadata.steps].sort((a, b) => a.number - b.number) : []),
+    [testMetadata?.steps]
+  );
+  const orderedSteps = useMemo(() => {
+    if (!run?.steps) {
+      return [] as StepSummary[];
+    }
+    return [...run.steps].sort((a, b) => {
+      const aTime = a.startedAt ? new Date(a.startedAt).getTime() : 0;
+      const bTime = b.startedAt ? new Date(b.startedAt).getTime() : 0;
+      return aTime - bTime;
+    });
+  }, [run?.steps]);
+
   useEffect(() => {
+    if (!logsExpanded) {
+      return;
+    }
     if (logsRef.current) {
       logsRef.current.scrollTop = logsRef.current.scrollHeight;
     }
-  }, [run?.logs]);
+  }, [logsExpanded, logItems]);
 
   useEffect(() => {
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
   }, [run?.chat]);
-
-  const currentStatus = run?.status ?? 'queued';
-  const canControl = currentStatus === 'running' || currentStatus === 'paused';
-
-  const stepGroups = useMemo(() => run?.steps ?? [], [run?.steps]);
-  const logItems = useMemo(() => run?.logs ?? [], [run?.logs]);
-  const chatItems = useMemo(() => run?.chat ?? [], [run?.chat]);
 
   const testTitle = testMetadata?.name || run?.testId || 'Test Run';
 
@@ -360,8 +377,8 @@ export default function RunSession() {
         {run && (
           <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
             <div className="space-y-6">
-              <div className="bg-white rounded-lg shadow p-6">
-                <div className="flex flex-wrap items-center gap-3 mb-4">
+              <div className="bg-white rounded-lg shadow p-6 space-y-6">
+                <div className="flex flex-wrap items-center gap-3">
                   <button
                     onClick={() => handleControl('resume')}
                     disabled={
@@ -397,52 +414,116 @@ export default function RunSession() {
                   )}
                 </div>
 
-                <div className="rounded-md bg-gray-900 text-green-200 font-mono text-sm h-64 overflow-y-auto p-4">
-                  <div ref={logsRef}>
-                    {logItems.length === 0 ? (
-                      <p className="text-gray-400">Awaiting log output…</p>
-                    ) : (
-                      logItems.map((log: RunLogEntry) => (
-                        <div key={log.id} className="whitespace-pre-wrap">
-                          <span className="text-gray-500">
-                            [{formatTimestamp(log.timestamp)}]
-                          </span>{' '}
-                          {log.message}
-                        </div>
-                      ))
-                    )}
+                {run.options && (
+                  <div className="flex flex-wrap gap-4 text-sm text-gray-600">
+                    <span>
+                      <span className="font-semibold text-gray-800">Browser:</span>{' '}
+                      {run.options.headed ? 'Visible (headed)' : 'Headless'}
+                    </span>
+                    <span>
+                      <span className="font-semibold text-gray-800">Speed:</span>{' '}
+                      {run.options.speed.toFixed(1)}x
+                    </span>
                   </div>
+                )}
+
+                {scriptedSteps.length > 0 && (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                    <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wide mb-3">
+                      Scripted Steps
+                    </h3>
+                    <ol className="space-y-3 text-sm text-gray-700 list-decimal list-inside">
+                      {scriptedSteps.map((step) => (
+                        <li key={step.number} className="space-y-2">
+                          <div className="font-medium text-gray-900">{step.qaSummary}</div>
+                          <pre className="whitespace-pre-wrap rounded bg-gray-900 text-xs text-green-300 px-3 py-2 overflow-x-auto">
+                            {step.playwrightCode}
+                          </pre>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
+                <div className="border border-gray-100 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => setLogsExpanded((prev) => !prev)}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left"
+                  >
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900">System Logs</h3>
+                      <p className="text-xs text-gray-500">{logItems.length} entries</p>
+                    </div>
+                    <svg
+                      className={`h-5 w-5 text-gray-600 transition-transform ${logsExpanded ? 'rotate-180' : ''}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={1.8}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                    </svg>
+                  </button>
+                  {logsExpanded && (
+                    <div className="border-t border-gray-100 bg-gray-900 text-green-200 font-mono text-xs max-h-64 overflow-y-auto px-4 py-3">
+                      <div ref={logsRef}>
+                        {logItems.length === 0 ? (
+                          <p className="text-gray-500">Awaiting log output…</p>
+                        ) : (
+                          logItems.map((log: RunLogEntry) => (
+                            <div key={log.id} className="whitespace-pre-wrap">
+                              <span className="text-gray-500">[{formatTimestamp(log.timestamp)}]</span>{' '}
+                              {log.message}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="bg-white rounded-lg shadow p-6">
                 <h2 className="text-lg font-semibold text-gray-900 mb-4">Live Step Summary</h2>
-                {stepGroups.length === 0 ? (
+                {orderedSteps.length === 0 ? (
                   <p className="text-gray-500">Waiting for step activity…</p>
                 ) : (
                   <div className="space-y-3">
-                    {stepGroups.map((step: StepSummary) => (
-                      <div
-                        key={step.id}
-                        className={`rounded-lg border-l-4 px-4 py-3 ${stepStatusStyles[step.status]}`}
-                        style={{ marginLeft: `${step.depth * 12}px` }}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="font-medium text-gray-900">{step.title}</p>
-                          <span className="text-xs uppercase tracking-wide text-gray-600">
-                            {step.status}
-                          </span>
+                    {orderedSteps.map((step: StepSummary, index) => {
+                      const scripted = scriptedSteps[index];
+                      const displaySummary = scripted?.qaSummary || step.title;
+                      const scriptedLabel = scripted ? `Step ${scripted.number}` : undefined;
+                      return (
+                        <div
+                          key={step.id}
+                          className={`rounded-lg border-l-4 px-4 py-3 ${stepStatusStyles[step.status]}`}
+                          style={{ marginLeft: `${step.depth * 12}px` }}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-medium text-gray-900">{displaySummary}</p>
+                              {scripted && step.title && step.title !== scripted.qaSummary && (
+                                <p className="text-xs text-gray-600 mt-1">{step.title}</p>
+                              )}
+                            </div>
+                            <div className="text-right text-xs uppercase tracking-wide text-gray-600">
+                              {scriptedLabel && <div className="text-gray-500 mb-1">{scriptedLabel}</div>}
+                              <div>{step.status}</div>
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 flex flex-wrap gap-3">
+                            <span>Started {formatTimestamp(step.startedAt)}</span>
+                            {step.endedAt && <span>Ended {formatTimestamp(step.endedAt)}</span>}
+                            {step.category && <span>{step.category}</span>}
+                          </div>
+                          {step.error && (
+                            <p className="mt-2 text-sm text-red-700">{step.error}</p>
+                          )}
                         </div>
-                        <div className="mt-1 text-xs text-gray-600 flex flex-wrap gap-3">
-                          <span>Started {formatTimestamp(step.startedAt)}</span>
-                          {step.endedAt && <span>Ended {formatTimestamp(step.endedAt)}</span>}
-                          {step.category && <span>{step.category}</span>}
-                        </div>
-                        {step.error && (
-                          <p className="mt-2 text-sm text-red-700">{step.error}</p>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

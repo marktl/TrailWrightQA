@@ -311,12 +311,14 @@ function escapeString(str: string): string {
  */
 export function createRecordedStep(
   stepNumber: number,
-  action: AIAction
+  action: AIAction,
+  extras: Partial<Pick<RecordedStep, 'screenshotPath'>> = {}
 ): RecordedStep {
   return {
     stepNumber,
     playwrightCode: generatePlaywrightCode(action),
     qaSummary: generateQASummary(action),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    ...extras
   };
 }

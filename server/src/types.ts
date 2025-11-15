@@ -4,6 +4,7 @@ export interface TestMetadata {
   description?: string;
   tags?: string[];
   prompt?: string;
+  steps?: TestStepMetadata[];
   createdAt: string;
   updatedAt?: string;
 }
@@ -11,6 +12,12 @@ export interface TestMetadata {
 export interface Test {
   metadata: TestMetadata;
   code: string;
+}
+
+export interface TestStepMetadata {
+  number: number;
+  qaSummary: string;
+  playwrightCode: string;
 }
 
 export interface RunResult {
@@ -53,6 +60,11 @@ export interface ChatMessage {
   timestamp: string;
 }
 
+export interface RunOptionSettings {
+  headed: boolean;
+  speed: number;
+}
+
 export interface LiveRunState {
   runId: string;
   testId: string;
@@ -63,4 +75,5 @@ export interface LiveRunState {
   steps: StepSummary[];
   chat: ChatMessage[];
   result?: RunResult;
+  options?: RunOptionSettings;
 }

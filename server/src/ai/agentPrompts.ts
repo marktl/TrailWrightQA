@@ -1,4 +1,8 @@
 import type { RecordedStep } from '../../../shared/types.js';
+import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
+import type { AIProvider } from './index.js';
 
 export const AGENT_SYSTEM_PROMPT = `You are a Playwright automation agent. You observe web pages and decide the NEXT SINGLE ACTION to achieve the user's goal.
 
@@ -32,10 +36,11 @@ GUIDELINES:
 1. Take ONE action at a time
 2. Use semantic selectors (getByRole, getByLabel) whenever possible
 3. If goal is achieved, respond with action: "done"
-4. If stuck or unable to proceed, respond with action: "done" and explain in reasoning
-5. Keep reasoning simple and non-technical for QA staff
-6. Always include reasoning field
-7. Be conservative with "wait" actions - only use if absolutely necessary
+4. If success criteria is provided and already satisfied, respond with action: "done" and reference the criteria in reasoning
+5. If stuck or unable to proceed, respond with action: "done" and explain in reasoning
+6. Keep reasoning simple and non-technical for QA staff
+7. Always include reasoning field
+8. Be conservative with "wait" actions - only use if absolutely necessary
 
 EXAMPLES:
 User goal: "Click the login button"
@@ -78,16 +83,25 @@ export function buildAgentPrompt(
   goal: string,
   currentUrl: string,
   pageState: string,
-  previousSteps: RecordedStep[]
+  previousSteps: RecordedStep[],
+  successCriteria?: string
 ): string {
   const stepsSummary =
     previousSteps.length > 0
       ? previousSteps.map((step) => `${step.stepNumber}. ${step.qaSummary}`).join('\n')
       : 'None yet';
 
+  const criteriaBlock = successCriteria
+    ? `SUCCESS CRITERIA:\n${successCriteria}\n\nIf this criteria is already satisfied, respond with action: "done" and explain briefly.\n`
+    : 'SUCCESS CRITERIA:\nNone provided.\n';
+
   return `USER GOAL:
 ${goal}
 
+CURRENT URL:
+${currentUrl}
+
+${criteriaBlock}
 CURRENT PAGE STATE:
 ${pageState}
 
@@ -96,4 +110,76 @@ ${stepsSummary}
 
 What is the NEXT SINGLE ACTION to progress toward the goal?
 Respond with JSON only.`;
+}
+
+export async function generateTestName(
+  goal: string,
+  steps: string[],
+  provider: AIProvider,
+  apiKey: string,
+  baseUrl?: string
+): Promise<string> {
+  const formattedSteps = steps.length
+    ? steps.map((summary, index) => `${index + 1}. ${summary}`).join('\n')
+    : 'No steps recorded yet.';
+
+  const prompt = `You are naming an automated QA test.
+
+Goal:
+${goal}
+
+Steps accomplished:
+${formattedSteps}
+
+Provide a concise test name (2-6 words). Avoid special characters other than spaces, hyphens, or underscores. Respond with the name only.`;
+
+  let response = '';
+
+  switch (provider) {
+    case 'anthropic': {
+      const client = new Anthropic({ apiKey });
+      const completion = await client.messages.create({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 60,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const block = completion.content[0];
+      if (block?.type !== 'text') {
+        throw new Error('Unexpected response from Anthropic while naming test');
+      }
+      response = block.text;
+      break;
+    }
+    case 'openai': {
+      const client = new OpenAI({ apiKey, baseURL: baseUrl });
+      const completion = await client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 60
+      });
+      response = completion.choices[0]?.message?.content || '';
+      break;
+    }
+    case 'gemini': {
+      const genAI = new GoogleGenAI({ apiKey });
+      const result = await genAI.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: prompt
+      });
+      response = result.text || '';
+      break;
+    }
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+
+  if (!response.trim()) {
+    throw new Error('AI did not return a test name');
+  }
+
+  return response
+    .trim()
+    .replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9 _-]+/g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 60);
 }

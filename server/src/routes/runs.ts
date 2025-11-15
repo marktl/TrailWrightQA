@@ -28,7 +28,31 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'testId is required' });
     }
 
-    const session = await startLiveRun(CONFIG.DATA_DIR, testId);
+    const headedPreference =
+      typeof req.body.headed === 'boolean'
+        ? req.body.headed
+        : typeof req.body.headed === 'string'
+          ? req.body.headed.toLowerCase() !== 'false'
+          : undefined;
+
+    let speedPreference: number | undefined;
+    if (typeof req.body.speed === 'number') {
+      speedPreference = req.body.speed;
+    } else if (typeof req.body.speed === 'string') {
+      const parsed = Number.parseFloat(req.body.speed);
+      if (Number.isFinite(parsed)) {
+        speedPreference = parsed;
+      }
+    }
+
+    if (typeof speedPreference === 'number') {
+      speedPreference = Math.min(2, Math.max(0.5, speedPreference));
+    }
+
+    const session = await startLiveRun(CONFIG.DATA_DIR, testId, {
+      headed: headedPreference,
+      speed: speedPreference
+    });
     return res.status(202).json({ runId: session.id });
   } catch (err: any) {
     console.error('Test run error:', err);

@@ -1,4 +1,6 @@
 import express from 'express';
+import path from 'node:path';
+import fs from 'node:fs/promises';
 import type {
   LiveGenerationOptions,
   LiveGenerationState,
@@ -38,7 +40,7 @@ router.post('/start', async (req, res) => {
     }
 
     // Create new generation session
-    const generator = new LiveTestGenerator(options, config.apiProvider, apiKey);
+    const generator = new LiveTestGenerator(options, config.apiProvider, apiKey, config.baseUrl);
     sessions.set(generator.id, generator);
 
     // Setup event forwarding to SSE clients
@@ -123,6 +125,29 @@ router.get('/:sessionId/events', (req, res) => {
 });
 
 /**
+ * Serve stored screenshots for a generation session
+ */
+router.get('/:sessionId/screenshots/:fileName', async (req, res) => {
+  const { sessionId, fileName } = req.params;
+  const sanitized = path.basename(fileName);
+  const filePath = path.join(
+    CONFIG.DATA_DIR,
+    'live-generation',
+    sessionId,
+    'screenshots',
+    sanitized
+  );
+
+  try {
+    await fs.access(filePath);
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.sendFile(filePath);
+  } catch {
+    res.status(404).json({ error: 'Screenshot not found' });
+  }
+});
+
+/**
  * Stop a running generation session
  */
 router.post('/:sessionId/stop', async (req, res) => {
@@ -136,6 +161,166 @@ router.post('/:sessionId/stop', async (req, res) => {
   await generator.stop();
 
   res.json({ success: true, state: generator.getState() });
+});
+
+/**
+ * Restart generation from beginning
+ */
+router.post('/:sessionId/restart', async (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    await generator.restart();
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to restart generation' });
+  }
+});
+
+router.post('/:sessionId/pause', (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  generator.pause();
+  res.json({ success: true, state: generator.getState() });
+});
+
+router.post('/:sessionId/resume', (req, res) => {
+  const { sessionId } = req.params;
+  const { userCorrection } = req.body ?? {};
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  generator.resume(typeof userCorrection === 'string' ? userCorrection : undefined);
+  res.json({ success: true, state: generator.getState() });
+});
+
+router.patch('/:sessionId/goal', (req, res) => {
+  const { sessionId } = req.params;
+  const { goal } = req.body;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    generator.updateGoal(goal);
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to update goal' });
+  }
+});
+
+router.patch('/:sessionId/success-criteria', (req, res) => {
+  const { sessionId } = req.params;
+  const { successCriteria } = req.body;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    generator.updateSuccessCriteria(successCriteria);
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to update success criteria' });
+  }
+});
+
+router.patch('/:sessionId/max-steps', (req, res) => {
+  const { sessionId } = req.params;
+  const { maxSteps } = req.body ?? {};
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  const parsed = Number(maxSteps);
+
+  if (!Number.isFinite(parsed)) {
+    return res.status(400).json({ error: 'Max steps must be a number' });
+  }
+
+  try {
+    generator.updateMaxSteps(parsed);
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to update max steps' });
+  }
+});
+
+router.post('/:sessionId/chat', async (req, res) => {
+  const { sessionId } = req.params;
+  const { message } = req.body;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!message || typeof message !== 'string') {
+    return res.status(400).json({ error: 'Message is required' });
+  }
+
+  try {
+    await generator.continueWithFeedback(message);
+    const state = generator.getState();
+    res.json({ success: true, chat: state.chat, state });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to process message' });
+  }
+});
+
+router.delete('/:sessionId/steps/:stepNumber', async (req, res) => {
+  const { sessionId, stepNumber } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    const parsedStep = Number.parseInt(stepNumber, 10);
+    if (Number.isNaN(parsedStep)) {
+      return res.status(400).json({ error: 'Invalid step number' });
+    }
+
+    await generator.deleteStep(parsedStep);
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to delete step' });
+  }
+});
+
+router.post('/:sessionId/suggest-name', async (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    const suggestedName = await generator.suggestTestName();
+    res.json({ suggestedName });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to suggest test name' });
+  }
 });
 
 /**
@@ -153,13 +338,14 @@ router.post('/:sessionId/save', async (req, res) => {
 
   const state = generator.getState();
 
-  if (state.status !== 'completed' && state.status !== 'failed') {
+  if (!['completed', 'failed', 'stopped'].includes(state.status)) {
     return res.status(400).json({ error: 'Generation is still in progress' });
   }
 
   try {
     const code = generator.generateTestCode();
     const now = new Date().toISOString();
+    const recordedSteps = state.recordedSteps || [];
 
     const test: Test = {
       metadata: {
@@ -167,7 +353,12 @@ router.post('/:sessionId/save', async (req, res) => {
         name: name || state.recordedSteps[0]?.qaSummary || 'AI Generated Test',
         description: description || `Goal: ${state.stepsTaken} steps`,
         tags: tags || ['ai-generated', 'live-session'],
-        prompt: state.recordedSteps.map((s) => s.qaSummary).join('; ') || undefined,
+        prompt: recordedSteps.map((s) => s.qaSummary).join('; ') || undefined,
+        steps: recordedSteps.map((step) => ({
+          number: step.stepNumber,
+          qaSummary: step.qaSummary,
+          playwrightCode: step.playwrightCode
+        })),
         createdAt: now,
         updatedAt: now
       },

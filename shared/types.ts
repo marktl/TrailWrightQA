@@ -4,8 +4,15 @@ export interface TestMetadata {
   description?: string;
   tags?: string[];
   prompt?: string;
+  steps?: TestStepMetadata[];
   createdAt: string;
   updatedAt?: string;
+}
+
+export interface TestStepMetadata {
+  number: number;
+  qaSummary: string;
+  playwrightCode: string;
 }
 
 export interface Test {
@@ -53,6 +60,11 @@ export interface ChatMessage {
   timestamp: string;
 }
 
+export interface RunOptionSettings {
+  headed: boolean;
+  speed: number;
+}
+
 export interface LiveRunState {
   runId: string;
   testId: string;
@@ -63,6 +75,7 @@ export interface LiveRunState {
   steps: StepSummary[];
   chat: ChatMessage[];
   result?: RunResult;
+  options?: RunOptionSettings;
 }
 
 // Live AI Test Generation Types
@@ -81,6 +94,7 @@ export interface RecordedStep {
   playwrightCode: string;
   qaSummary: string;
   timestamp: string;
+  screenshotPath?: string;
 }
 
 export type CaptureMode = 'accessibility' | 'screenshot' | 'hybrid';
@@ -88,22 +102,34 @@ export type CaptureMode = 'accessibility' | 'screenshot' | 'hybrid';
 export interface LiveGenerationOptions {
   startUrl: string;
   goal: string;
+  successCriteria?: string;
   maxSteps?: number;
   captureMode?: CaptureMode;
 }
 
-export type GenerationStatus = 'initializing' | 'running' | 'thinking' | 'completed' | 'failed' | 'stopped';
+export type GenerationStatus =
+  | 'initializing'
+  | 'running'
+  | 'thinking'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'stopped';
 
 export interface LiveGenerationState {
   sessionId: string;
   status: GenerationStatus;
   startedAt: string;
   updatedAt: string;
+  startUrl: string;
+  goal: string;
   currentUrl: string;
   stepsTaken: number;
   maxSteps: number;
+  successCriteria?: string;
   recordedSteps: RecordedStep[];
   logs: string[];
+  chat: ChatMessage[];
   error?: string;
 }
 
@@ -113,7 +139,9 @@ export type LiveGenerationEventType =
   | 'log'
   | 'ai_thinking'
   | 'step_recorded'
+  | 'step_deleted'
   | 'page_changed'
+  | 'chat'
   | 'completed'
   | 'error';
 
