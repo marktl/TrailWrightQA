@@ -83,6 +83,30 @@ export const api = {
       body: JSON.stringify({ prompt, baseUrl })
     }),
   deleteTest: (id: string) => fetchApi(`/tests/${id}`, { method: 'DELETE' }),
+  exportTest: async (id: string): Promise<Blob> => {
+    const response = await fetch(`${API_BASE}/tests/${id}/export`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Export failed' }));
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  importTestArchive: async (file: File | Blob) => {
+    const response = await fetch(`${API_BASE}/tests/import`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/zip'
+      },
+      body: file
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Import failed' }));
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+
+    return response.json();
+  },
   recordTest: (url?: string) =>
     fetchApi<{ success: boolean; testId: string; message: string }>('/tests/record', {
       method: 'POST',

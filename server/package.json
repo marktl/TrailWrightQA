@@ -13,6 +13,8 @@
     "@anthropic-ai/sdk": "^0.67.0",
     "@google/genai": "^1.27.0",
     "@playwright/test": "^1.56.1",
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",

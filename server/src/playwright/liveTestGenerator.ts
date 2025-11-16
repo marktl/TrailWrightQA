@@ -12,6 +12,7 @@ import type {
   CaptureMode,
   ChatMessage
 } from '../../../shared/types.js';
+import type { TestMetadata } from '../types.js';
 import { capturePageState, formatPageStateForAI, resetHashTracking } from './pageStateCapture.js';
 import { executeAction, createRecordedStep } from './actionExecutor.js';
 import { AGENT_SYSTEM_PROMPT, buildAgentPrompt, generateTestName } from '../ai/agentPrompts.js';
@@ -49,6 +50,7 @@ export class LiveTestGenerator extends EventEmitter {
   private assetRootDir: string;
   private sessionDir: string;
   private screenshotDir: string;
+  private persistedTest?: TestMetadata;
 
   private options: NormalizedGenerationOptions;
   private provider: AIProvider;
@@ -108,7 +110,8 @@ export class LiveTestGenerator extends EventEmitter {
       recordedSteps: [...this.recordedSteps],
       logs: [...this.logs],
       chat: [...this.chat],
-      error: this.error
+      error: this.error,
+      savedTestId: this.persistedTest?.id
     };
   }
 
@@ -571,6 +574,7 @@ export class LiveTestGenerator extends EventEmitter {
     this.userCorrections = [];
     this.error = undefined;
     this.nextStepNumber = 1;
+    this.persistedTest = undefined;
 
     // Reset tracking
     resetHashTracking();
@@ -578,6 +582,11 @@ export class LiveTestGenerator extends EventEmitter {
     // Restart
     this.log('Restarting generation from beginning...');
     await this.start();
+  }
+
+  markTestPersisted(metadata: TestMetadata): void {
+    this.persistedTest = metadata;
+    this.touch();
   }
 
   /**

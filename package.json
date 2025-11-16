@@ -11,7 +11,8 @@
     "build:server": "cd server && npm run build",
     "build:client": "cd client && npm run build",
     "qa:verify": "node scripts/qa-verify.mjs",
-    "fix:auto": "node scripts/auto-fix.mjs"
+    "fix:auto": "node scripts/auto-fix.mjs",
+    "setup": "node scripts/setup.mjs"
   },
   "keywords": [
     "playwright",

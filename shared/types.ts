@@ -131,6 +131,7 @@ export interface LiveGenerationState {
   logs: string[];
   chat: ChatMessage[];
   error?: string;
+  savedTestId?: string;
 }
 
 export type LiveGenerationEventType =
@@ -143,6 +144,7 @@ export type LiveGenerationEventType =
   | 'page_changed'
   | 'chat'
   | 'completed'
+  | 'auto_saved'
   | 'error';
 
 export interface LiveGenerationEvent {

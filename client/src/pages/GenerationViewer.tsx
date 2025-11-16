@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import type { ApiTestMetadata } from '../api/client';
 import type {
   LiveGenerationState,
   LiveGenerationEvent,
@@ -32,6 +33,8 @@ export default function GenerationViewer() {
   const [sessionConfigError, setSessionConfigError] = useState<string | null>(null);
   const [savingSessionConfig, setSavingSessionConfig] = useState(false);
   const [activeScreenshotIndex, setActiveScreenshotIndex] = useState<number | null>(null);
+  const [savedTest, setSavedTest] = useState<ApiTestMetadata | null>(null);
+  const [autoSaveNotice, setAutoSaveNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sessionId) {
@@ -61,9 +64,21 @@ export default function GenerationViewer() {
       if (initialState.error) {
         setError(initialState.error);
       }
+      if (initialState.savedTestId) {
+        void hydrateSavedTest(initialState.savedTestId);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load generation state';
       setError(message);
+    }
+  }
+
+  async function hydrateSavedTest(testId: string) {
+    try {
+      const { test } = await api.getTest(testId);
+      setSavedTest(test.metadata);
+    } catch (err) {
+      console.warn('Unable to load auto-saved test metadata', err);
     }
   }
 
@@ -147,6 +162,19 @@ export default function GenerationViewer() {
         setLogs(event.payload.logs || []);
         break;
 
+      case 'auto_saved': {
+        const metadata = event.payload?.metadata as ApiTestMetadata | undefined;
+        if (metadata) {
+          setSavedTest(metadata);
+          setState((prev) => (prev ? { ...prev, savedTestId: metadata.id } : prev));
+          setAutoSaveNotice(`Auto-saved as "${metadata.name}"`);
+          setTimeout(() => {
+            setAutoSaveNotice(null);
+          }, 6000);
+        }
+        break;
+      }
+
       case 'error':
         setError(event.payload.message);
         break;
@@ -155,6 +183,14 @@ export default function GenerationViewer() {
         break;
     }
   }
+
+  useEffect(() => {
+    const savedId = state?.savedTestId;
+    if (!savedId || savedTest?.id === savedId) {
+      return;
+    }
+    void hydrateSavedTest(savedId);
+  }, [state?.savedTestId, savedTest?.id]);
 
   async function handlePause() {
     if (!sessionId || isPausing) return;
@@ -417,10 +453,10 @@ export default function GenerationViewer() {
     setIsSaving(true);
     setSaveError(null);
 
-    let suggestedName = steps[0]?.qaSummary || 'AI Generated Test';
+    let suggestedName = savedTest?.name || steps[0]?.qaSummary || 'AI Generated Test';
 
     try {
-      if (steps.length > 0) {
+      if (!savedTest && steps.length > 0) {
         const { suggestedName: aiSuggestedName } = await api.getSuggestedTestName(sessionId);
         if (aiSuggestedName?.trim()) {
           suggestedName = aiSuggestedName.trim();
@@ -448,9 +484,10 @@ export default function GenerationViewer() {
         name: trimmedName,
         tags: ['ai-generated', 'live-session']
       });
-
-      alert(`Test "${test.name}" saved successfully!`);
-      navigate('/');
+      setSavedTest(test);
+      setState((prev) => (prev ? { ...prev, savedTestId: test.id } : prev));
+      setAutoSaveNotice(`Saved as "${test.name}"`);
+      setTimeout(() => setAutoSaveNotice(null), 5000);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save test';
       setSaveError(message);
@@ -537,6 +574,35 @@ export default function GenerationViewer() {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-8">
+        {autoSaveNotice && (
+          <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+            {autoSaveNotice}
+          </div>
+        )}
+
+        {savedTest && (
+          <div className="mb-4 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 md:flex-row md:items-center md:justify-between">
+            <div>
+              Auto-saved as <span className="font-semibold">{savedTest.name}</span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleSave}
+                disabled={!canSave || isSaving}
+                className="rounded-md border border-emerald-400 px-3 py-1 text-sm font-medium text-emerald-900 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSaving ? 'Updating…' : 'Rename / Update Meta'}
+              </button>
+              <button
+                onClick={() => navigate('/')}
+                className="rounded-md border border-transparent px-3 py-1 text-sm font-medium text-emerald-900 hover:underline"
+              >
+                Back to Dashboard
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>

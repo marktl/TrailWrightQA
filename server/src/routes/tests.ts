@@ -1,14 +1,77 @@
 import express from 'express';
 import { spawn } from 'child_process';
 import path from 'path';
+import fs from 'fs/promises';
+import archiver from 'archiver';
+import AdmZip from 'adm-zip';
 import { generateTest } from '../ai/index.js';
 import { saveTest, loadTest, listTests, deleteTest } from '../storage/tests.js';
 import { loadConfig } from '../storage/config.js';
 import { CONFIG } from '../config.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
 import type { Test } from '../types.js';
+import type { TestMetadata } from '../../../shared/types.js';
 
 const router = express.Router();
+const zipUpload = express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '200mb' });
+
+async function listRunFoldersForTest(testId: string): Promise<string[]> {
+  const runsDir = path.join(CONFIG.DATA_DIR, 'runs');
+  await fs.mkdir(runsDir, { recursive: true });
+  const entries = await fs.readdir(runsDir, { withFileTypes: true });
+  const matches: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    if (entry.name === 'latest') {
+      continue;
+    }
+
+    const resultPath = path.join(runsDir, entry.name, 'result.json');
+    try {
+      const content = await fs.readFile(resultPath, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (parsed?.testId === testId) {
+        matches.push(entry.name);
+      }
+    } catch {
+      // Ignore unreadable run folders
+    }
+  }
+
+  return matches;
+}
+
+async function runFolderExists(name: string): Promise<boolean> {
+  try {
+    await fs.access(path.join(CONFIG.DATA_DIR, 'runs', name));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureUniqueRunFolder(preferred: string): Promise<string> {
+  if (!(await runFolderExists(preferred))) {
+    return preferred;
+  }
+
+  let index = 1;
+  while (index < 1000) {
+    const nextName = `${preferred}-${index}`;
+    if (!(await runFolderExists(nextName))) {
+      return nextName;
+    }
+    index += 1;
+  }
+  return `${preferred}-${Date.now()}`;
+}
+
+function isSafeEntryName(entryName: string): boolean {
+  return !entryName.includes('..') && !path.isAbsolute(entryName);
+}
 
 function buildGeneratedTest(prompt: string, code: string): Test {
   const normalizedPrompt = (prompt ?? '').toString().trim();
@@ -126,6 +189,47 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// Export test with associated runs as zip
+router.get('/:id/export', async (req, res) => {
+  try {
+    const testId = req.params.id;
+    const test = await loadTest(CONFIG.DATA_DIR, testId);
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const filename = `${testId}-trailwright-export.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    archive.on('error', (error) => {
+      console.error('Export archive error', error);
+      if (!res.headersSent) {
+        res.status(500).end();
+      } else {
+        res.end();
+      }
+    });
+
+    archive.pipe(res);
+
+    const testFilePath = path.join(CONFIG.DATA_DIR, 'tests', `${testId}.spec.ts`);
+    archive.file(testFilePath, { name: path.posix.join('tests', `${testId}.spec.ts`) });
+    archive.append(JSON.stringify(test.metadata, null, 2), { name: 'metadata.json' });
+
+    const runFolders = await listRunFoldersForTest(testId);
+    for (const folder of runFolders) {
+      const absoluteRunPath = path.join(CONFIG.DATA_DIR, 'runs', folder);
+      archive.directory(absoluteRunPath, path.posix.join('runs', folder));
+    }
+
+    await archive.finalize();
+  } catch (err: any) {
+    console.error('Failed to export test', err);
+    if (!res.headersSent) {
+      res.status(err?.code === 'ENOENT' ? 404 : 500).json({ error: err.message || 'Unable to export test' });
+    }
+  }
+});
+
 // Launch Playwright codegen to record a new test
 router.post('/record', async (req, res) => {
   try {
@@ -141,7 +245,6 @@ router.post('/record', async (req, res) => {
     const testFilePath = path.join(CONFIG.DATA_DIR, 'tests', testFileName);
 
     // Create an empty starter test file for codegen to write to
-    const fs = await import('fs/promises');
     const starterTemplate = `import { test, expect } from '@playwright/test';
 
 test('recorded test', async ({ page }) => {
@@ -243,7 +346,6 @@ router.post('/:id/finalize', async (req, res) => {
     const testFile = path.join(CONFIG.DATA_DIR, 'tests', `${testId}.spec.ts`);
 
     // Read the raw generated code
-    const fs = await import('fs/promises');
     let code: string;
     try {
       code = await fs.readFile(testFile, 'utf-8');
@@ -271,6 +373,113 @@ router.post('/:id/finalize', async (req, res) => {
   } catch (err: any) {
     console.error('Finalize error:', err);
     res.status(500).json({ error: err.message || 'Failed to finalize test' });
+  }
+});
+
+// Import a previously exported test archive
+router.post('/import', zipUpload, async (req, res) => {
+  try {
+    if (!req.body || !Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'Upload a .zip export to import a test' });
+    }
+
+    const zip = new AdmZip(req.body);
+    const metadataEntry = zip.getEntry('metadata.json');
+    if (!metadataEntry) {
+      return res.status(400).json({ error: 'Archive missing metadata.json' });
+    }
+
+    const rawMetadata = metadataEntry.getData().toString('utf-8');
+    let metadata: TestMetadata;
+    try {
+      metadata = JSON.parse(rawMetadata);
+    } catch {
+      return res.status(400).json({ error: 'Invalid metadata.json contents' });
+    }
+
+    const specEntry = zip
+      .getEntries()
+      .find((entry) => entry.entryName.endsWith('.spec.ts') && entry.entryName.startsWith('tests/'));
+
+    if (!specEntry) {
+      return res.status(400).json({ error: 'Archive missing test .spec.ts file' });
+    }
+
+    let targetId = metadata.id?.trim() || `imported-${Date.now()}`;
+    const existingTestPath = path.join(CONFIG.DATA_DIR, 'tests', `${targetId}.spec.ts`);
+    try {
+      await fs.access(existingTestPath);
+      targetId = `${targetId}-${Date.now().toString(36)}`;
+    } catch {
+      // ok
+    }
+
+    const now = new Date().toISOString();
+    metadata.id = targetId;
+    metadata.createdAt = metadata.createdAt || now;
+    metadata.updatedAt = now;
+
+    const code = specEntry.getData().toString('utf-8');
+    await saveTest(CONFIG.DATA_DIR, { metadata, code });
+
+    const runEntries = zip.getEntries().filter((entry) => entry.entryName.startsWith('runs/'));
+    await fs.mkdir(path.join(CONFIG.DATA_DIR, 'runs'), { recursive: true });
+    const runsByFolder = new Map<string, AdmZip.IZipEntry[]>();
+
+    for (const entry of runEntries) {
+      if (!isSafeEntryName(entry.entryName)) {
+        continue;
+      }
+      const parts = entry.entryName.split('/');
+      if (parts.length < 2) {
+        continue;
+      }
+      const folder = parts[1];
+      if (!folder || folder === 'latest') {
+        continue;
+      }
+
+      if (!runsByFolder.has(folder)) {
+        runsByFolder.set(folder, []);
+      }
+      runsByFolder.get(folder)!.push(entry);
+    }
+
+    for (const [folder, entries] of runsByFolder.entries()) {
+      const targetFolder = await ensureUniqueRunFolder(folder);
+      for (const entry of entries) {
+        const relative = entry.entryName.replace(`runs/${folder}/`, '');
+        if (!relative) {
+          continue;
+        }
+
+        const destination = path.join(CONFIG.DATA_DIR, 'runs', targetFolder, relative);
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+
+        if (entry.isDirectory) {
+          await fs.mkdir(destination, { recursive: true });
+          continue;
+        }
+
+        await fs.writeFile(destination, entry.getData());
+
+        if (relative === 'result.json') {
+          try {
+            const content = await fs.readFile(destination, 'utf-8');
+            const parsed = JSON.parse(content);
+            parsed.testId = targetId;
+            await fs.writeFile(destination, JSON.stringify(parsed, null, 2));
+          } catch {
+            // ignore malformed result files
+          }
+        }
+      }
+    }
+
+    res.json({ success: true, test: metadata, runsImported: runsByFolder.size });
+  } catch (err: any) {
+    console.error('Import failed', err);
+    res.status(400).json({ error: err.message || 'Unable to import test archive' });
   }
 });
 

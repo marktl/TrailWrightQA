@@ -5,7 +5,8 @@ import type {
   LiveGenerationOptions,
   LiveGenerationState,
   LiveGenerationEvent,
-  Test
+  Test,
+  TestMetadata
 } from '../../../shared/types.js';
 import { LiveTestGenerator } from '../playwright/liveTestGenerator.js';
 import { loadConfig } from '../storage/config.js';
@@ -16,9 +17,93 @@ const router = express.Router();
 
 // Active generation sessions
 const sessions = new Map<string, LiveTestGenerator>();
+const persistedSessions = new Map<string, TestMetadata>();
 
 // SSE connections for real-time updates
 const sseClients = new Map<string, express.Response[]>();
+
+type PersistOptions = {
+  id?: string;
+  name?: string;
+  description?: string;
+  tags?: string[];
+  prompt?: string;
+};
+
+function formatAutoTestName(goal: string): string {
+  const trimmed = goal.trim() || 'AI generated test';
+  const snippet = trimmed.slice(0, 42).replace(/\s+/g, ' ');
+  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
+  return `${snippet} (${timestamp})`;
+}
+
+function summarizeTags(tags?: string[]): string[] {
+  if (tags?.length) {
+    return tags;
+  }
+  return ['ai-generated', 'live-session'];
+}
+
+async function persistGeneratorTest(
+  generator: LiveTestGenerator,
+  options: PersistOptions = {}
+): Promise<TestMetadata> {
+  const state = generator.getState();
+  if (!state.recordedSteps?.length) {
+    throw new Error('No recorded steps to save yet');
+  }
+
+  const existing = persistedSessions.get(generator.id);
+  const now = new Date().toISOString();
+  const metadata: TestMetadata = {
+    id: options.id || existing?.id || `ai-${generator.id}`,
+    name: options.name?.trim() || existing?.name || formatAutoTestName(state.goal),
+    description:
+      options.description?.trim() || existing?.description || `Goal: ${state.goal}`,
+    tags: summarizeTags(options.tags ?? existing?.tags),
+    prompt: options.prompt?.trim() || state.goal,
+    steps: state.recordedSteps.map((step) => ({
+      number: step.stepNumber,
+      qaSummary: step.qaSummary,
+      playwrightCode: step.playwrightCode
+    })),
+    createdAt: existing?.createdAt || now,
+    updatedAt: now
+  };
+
+  const test: Test = {
+    metadata,
+    code: generator.generateTestCode()
+  };
+
+  await saveTest(CONFIG.DATA_DIR, test);
+  persistedSessions.set(generator.id, metadata);
+  generator.markTestPersisted(metadata);
+  return metadata;
+}
+
+function broadcastSessionEvent(sessionId: string, event: LiveGenerationEvent): void {
+  const clients = sseClients.get(sessionId) || [];
+  const data = JSON.stringify(event);
+  clients.forEach((client) => client.write(`data: ${data}\n\n`));
+}
+
+async function handleAutoSave(generator: LiveTestGenerator): Promise<void> {
+  if (persistedSessions.has(generator.id)) {
+    return;
+  }
+
+  try {
+    const metadata = await persistGeneratorTest(generator);
+    broadcastSessionEvent(generator.id, {
+      type: 'auto_saved',
+      timestamp: new Date().toISOString(),
+      payload: { metadata }
+    });
+  } catch (error) {
+    console.error('Failed to auto-save generated test:', error);
+  }
+}
 
 /**
  * Start a new live AI test generation session
@@ -45,11 +130,11 @@ router.post('/start', async (req, res) => {
 
     // Setup event forwarding to SSE clients
     generator.on('event', (event: LiveGenerationEvent) => {
-      const clients = sseClients.get(generator.id) || [];
-      const data = JSON.stringify(event);
-      clients.forEach((client) => {
-        client.write(`data: ${data}\n\n`);
-      });
+      broadcastSessionEvent(generator.id, event);
+
+      if (event.type === 'completed') {
+        void handleAutoSave(generator);
+      }
     });
 
     // Start generation asynchronously
@@ -176,6 +261,7 @@ router.post('/:sessionId/restart', async (req, res) => {
 
   try {
     await generator.restart();
+    persistedSessions.delete(sessionId);
     res.json({ success: true, state: generator.getState() });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to restart generation' });
@@ -328,7 +414,7 @@ router.post('/:sessionId/suggest-name', async (req, res) => {
  */
 router.post('/:sessionId/save', async (req, res) => {
   const { sessionId } = req.params;
-  const { name, description, tags } = req.body;
+  const { name, description, tags, prompt } = req.body || {};
 
   const generator = sessions.get(sessionId);
 
@@ -343,35 +429,15 @@ router.post('/:sessionId/save', async (req, res) => {
   }
 
   try {
-    const code = generator.generateTestCode();
-    const now = new Date().toISOString();
-    const recordedSteps = state.recordedSteps || [];
+    const metadata = await persistGeneratorTest(generator, { name, description, tags, prompt });
 
-    const test: Test = {
-      metadata: {
-        id: `ai-${sessionId}`,
-        name: name || state.recordedSteps[0]?.qaSummary || 'AI Generated Test',
-        description: description || `Goal: ${state.stepsTaken} steps`,
-        tags: tags || ['ai-generated', 'live-session'],
-        prompt: recordedSteps.map((s) => s.qaSummary).join('; ') || undefined,
-        steps: recordedSteps.map((step) => ({
-          number: step.stepNumber,
-          qaSummary: step.qaSummary,
-          playwrightCode: step.playwrightCode
-        })),
-        createdAt: now,
-        updatedAt: now
-      },
-      code
-    };
+    broadcastSessionEvent(sessionId, {
+      type: 'auto_saved',
+      timestamp: new Date().toISOString(),
+      payload: { metadata }
+    });
 
-    await saveTest(CONFIG.DATA_DIR, test);
-
-    // Cleanup session
-    sessions.delete(sessionId);
-    sseClients.delete(sessionId);
-
-    res.json({ success: true, test: test.metadata });
+    res.json({ success: true, test: metadata });
   } catch (error: any) {
     console.error('Failed to save test:', error);
     res.status(500).json({ error: error.message || 'Failed to save test' });

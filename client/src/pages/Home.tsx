@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { ApiTestMetadata } from '../api/client';
@@ -34,6 +35,7 @@ export default function Home() {
   const [generateMessage, setGenerateMessage] = useState<string | null>(null);
   const [generateMessageType, setGenerateMessageType] = useState<'success' | 'error' | null>(null);
   const [defaultStartUrl, setDefaultStartUrl] = useState('');
+  const [providerStatus, setProviderStatus] = useState<{ provider: string; configured: boolean } | null>(null);
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [testToDelete, setTestToDelete] = useState<ApiTestMetadata | null>(null);
@@ -45,6 +47,9 @@ export default function Home() {
   const [runSpeed, setRunSpeed] = useState(1);
   const [runIsStarting, setRunIsStarting] = useState(false);
   const [runMessage, setRunMessage] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadTests();
@@ -81,9 +86,14 @@ export default function Home() {
     try {
       const config = await api.getConfig();
       setDefaultStartUrl(config?.defaultStartUrl || '');
+      setProviderStatus({
+        provider: config?.apiProvider || 'anthropic',
+        configured: Boolean(config?.apiKey && String(config.apiKey).startsWith('***'))
+      });
     } catch (err) {
       console.error('Failed to load config:', err);
       setDefaultStartUrl('');
+      setProviderStatus(null);
     }
   }
 
@@ -140,7 +150,7 @@ export default function Home() {
       });
 
       closeRunOptions();
-      window.open(`/runs/${runId}?testId=${encodeURIComponent(selectedTest.id)}`, '_blank');
+      navigate(`/runs/${runId}?testId=${encodeURIComponent(selectedTest.id)}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start run';
       setRunMessage(message);
@@ -184,14 +194,57 @@ export default function Home() {
       });
 
       closeGenerateModal();
-      // Open live generation viewer in new tab
-      window.open(`/generate/${sessionId}`, '_blank');
+      navigate(`/generate/${sessionId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start generation';
       setGenerateMessageType('error');
       setGenerateMessage(message);
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function handleExportTest(testId: string) {
+    try {
+      const blob = await api.exportTest(testId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${testId}-trailwright-export.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to export test';
+      alert(message);
+    }
+  }
+
+  function handleImportClick() {
+    setImportMessage(null);
+    fileInputRef.current?.click();
+  }
+
+  async function handleImportFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+
+    setImporting(true);
+    setImportMessage(null);
+
+    try {
+      const response = await api.importTestArchive(file);
+      setImportMessage(`Imported ${response?.test?.name || 'test'} successfully`);
+      await loadTests();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to import test archive';
+      setImportMessage(message);
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -244,6 +297,12 @@ export default function Home() {
                 Describe the workflow and TrailWright will draft a Playwright spec, launch the run,
                 and stream live progress.
               </p>
+              {providerStatus && (
+                <p className="mt-2 text-sm text-gray-500">
+                  Using <span className="font-semibold capitalize">{providerStatus.provider}</span>{' '}
+                  {providerStatus.configured ? '✓ Configured' : '⚠️ API key required'}
+                </p>
+              )}
             </div>
             <div className="flex flex-wrap gap-3">
               <button
@@ -253,16 +312,27 @@ export default function Home() {
                 Generate with AI
               </button>
               <button
-                onClick={() => navigate('/settings')}
-                className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                onClick={handleImportClick}
+                disabled={importing}
+                className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50"
               >
-                Configure Provider
+                {importing ? 'Importing…' : 'Import Tests'}
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/zip"
+                onChange={handleImportFileChange}
+                className="hidden"
+              />
             </div>
             {healthStatus === 'error' && (
               <p className="text-sm text-red-600">
                 Unable to reach the backend API. Ensure the TrailWright server is running.
               </p>
+            )}
+            {importMessage && (
+              <p className="text-sm text-gray-600">{importMessage}</p>
             )}
           </div>
 
@@ -317,19 +387,23 @@ export default function Home() {
                       onClick={() => openRunOptions(test)}
                       className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 whitespace-nowrap"
                     >
-                      Run/Edit
+                      Run
                     </button>
                     <button
                       onClick={() => handleEditTest(test.id)}
                       className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 whitespace-nowrap"
-                      aria-label="Edit test"
                     >
-                      Edit
+                      Open in Editor
+                    </button>
+                    <button
+                      onClick={() => handleExportTest(test.id)}
+                      className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 whitespace-nowrap"
+                    >
+                      Export
                     </button>
                     <button
                       onClick={() => openDeleteModal(test)}
                       className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 whitespace-nowrap"
-                      aria-label="Delete test"
                     >
                       Delete
                     </button>
