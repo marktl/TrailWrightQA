@@ -308,9 +308,9 @@ router.post('/:id/edit', async (req, res) => {
     let args: string[];
 
     if (process.platform === 'win32') {
-      // On Windows, use 'start' to open with default editor
-      command = 'cmd';
-      args = ['/c', 'start', '', testFile];
+      // Use PowerShell Start-Process for reliable quoting on Windows
+      command = 'powershell';
+      args = ['-NoProfile', '-Command', 'Start-Process', '-FilePath', testFile];
     } else if (process.platform === 'darwin') {
       // On macOS, use 'open'
       command = 'open';

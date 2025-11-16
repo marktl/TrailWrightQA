@@ -27,11 +27,14 @@ export default function GenerationViewer() {
   const [chatInput, setChatInput] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
-  const [editingSessionConfig, setEditingSessionConfig] = useState(false);
+  const [sessionConfigEditing, setSessionConfigEditing] = useState(false);
   const [sessionConfigPrompt, setSessionConfigPrompt] = useState('');
   const [sessionConfigMaxSteps, setSessionConfigMaxSteps] = useState('');
+  const [sessionConfigUrl, setSessionConfigUrl] = useState('');
+  const [sessionConfigSuccessCriteria, setSessionConfigSuccessCriteria] = useState('');
   const [sessionConfigError, setSessionConfigError] = useState<string | null>(null);
   const [savingSessionConfig, setSavingSessionConfig] = useState(false);
+  const [updatingKeepBrowserOpen, setUpdatingKeepBrowserOpen] = useState(false);
   const [activeScreenshotIndex, setActiveScreenshotIndex] = useState<number | null>(null);
   const [savedTest, setSavedTest] = useState<ApiTestMetadata | null>(null);
   const [autoSaveNotice, setAutoSaveNotice] = useState<string | null>(null);
@@ -61,6 +64,9 @@ export default function GenerationViewer() {
       setState(initialState);
       setSteps(initialState.recordedSteps || []);
       setLogs(initialState.logs || []);
+      setSessionConfigPrompt(initialState.goal);
+      setSessionConfigMaxSteps(String(initialState.maxSteps ?? ''));
+      setSessionConfigUrl(initialState.startUrl || '');
       if (initialState.error) {
         setError(initialState.error);
       }
@@ -192,6 +198,18 @@ export default function GenerationViewer() {
     void hydrateSavedTest(savedId);
   }, [state?.savedTestId, savedTest?.id]);
 
+  useEffect(() => {
+    if (sessionConfigEditing) {
+      return;
+    }
+    if (state) {
+      setSessionConfigPrompt(state.goal);
+      setSessionConfigMaxSteps(String(state.maxSteps ?? ''));
+      setSessionConfigUrl(state.startUrl || '');
+      setSessionConfigSuccessCriteria(state.successCriteria || '');
+    }
+  }, [sessionConfigEditing, state?.goal, state?.maxSteps, state?.startUrl, state?.successCriteria]);
+
   async function handlePause() {
     if (!sessionId || isPausing) return;
 
@@ -241,7 +259,7 @@ export default function GenerationViewer() {
 
   function openScreenshotModal(index: number) {
     const targetStep = steps[index];
-    if (!targetStep?.screenshotPath) {
+    if (!targetStep || (!targetStep.screenshotData && !targetStep.screenshotPath)) {
       return;
     }
     setActiveScreenshotIndex(index);
@@ -257,7 +275,8 @@ export default function GenerationViewer() {
     }
 
     for (let i = activeScreenshotIndex - 1; i >= 0; i -= 1) {
-      if (steps[i]?.screenshotPath) {
+      const step = steps[i];
+      if (step?.screenshotData || step?.screenshotPath) {
         setActiveScreenshotIndex(i);
         return;
       }
@@ -270,7 +289,8 @@ export default function GenerationViewer() {
     }
 
     for (let i = activeScreenshotIndex + 1; i < steps.length; i += 1) {
-      if (steps[i]?.screenshotPath) {
+      const step = steps[i];
+      if (step?.screenshotData || step?.screenshotPath) {
         setActiveScreenshotIndex(i);
         return;
       }
@@ -283,19 +303,21 @@ export default function GenerationViewer() {
     }
 
     const currentStep = steps[activeScreenshotIndex];
-    if (currentStep && currentStep.screenshotPath) {
+    if (currentStep && (currentStep.screenshotData || currentStep.screenshotPath)) {
       return;
     }
 
     for (let i = activeScreenshotIndex + 1; i < steps.length; i += 1) {
-      if (steps[i]?.screenshotPath) {
+      const step = steps[i];
+      if (step?.screenshotData || step?.screenshotPath) {
         setActiveScreenshotIndex(i);
         return;
       }
     }
 
     for (let i = activeScreenshotIndex - 1; i >= 0; i -= 1) {
-      if (steps[i]?.screenshotPath) {
+      const step = steps[i];
+      if (step?.screenshotData || step?.screenshotPath) {
         setActiveScreenshotIndex(i);
         return;
       }
@@ -367,19 +389,30 @@ export default function GenerationViewer() {
     void performRestart(false);
   }
 
-  function openSessionConfigEditor() {
+  function handleEnableSessionConfigEditing() {
     if (!state) return;
-
+    const confirmed = window.confirm(
+      'Updating the starting URL or goal will restart this AI session. Continue?'
+    );
+    if (!confirmed) {
+      return;
+    }
     setSessionConfigPrompt(state.goal);
     setSessionConfigMaxSteps(String(state.maxSteps ?? ''));
+    setSessionConfigUrl(state.startUrl || '');
+    setSessionConfigSuccessCriteria(state.successCriteria || '');
     setSessionConfigError(null);
-    setEditingSessionConfig(true);
+    setSessionConfigEditing(true);
   }
 
-  function closeSessionConfigEditor() {
+  function handleCancelSessionConfigEditing() {
     if (savingSessionConfig) return;
-    setEditingSessionConfig(false);
+    setSessionConfigEditing(false);
     setSessionConfigError(null);
+    setSessionConfigPrompt(state?.goal || '');
+    setSessionConfigMaxSteps(String(state?.maxSteps ?? ''));
+    setSessionConfigUrl(state?.startUrl || '');
+    setSessionConfigSuccessCriteria(state?.successCriteria || '');
   }
 
   async function handleSaveSessionConfig() {
@@ -389,11 +422,20 @@ export default function GenerationViewer() {
 
     const trimmedPrompt = sessionConfigPrompt.trim();
     const parsedMaxSteps = Number.parseInt(sessionConfigMaxSteps, 10);
+    const trimmedUrl = sessionConfigUrl.trim();
+    const trimmedSuccess = sessionConfigSuccessCriteria.trim();
     const promptChanged = trimmedPrompt !== state.goal;
     const maxStepsChanged = !Number.isNaN(parsedMaxSteps) && parsedMaxSteps !== state.maxSteps;
+    const urlChanged = trimmedUrl !== (state.startUrl || '');
+    const successChanged = trimmedSuccess !== (state.successCriteria || '');
 
     if (!trimmedPrompt) {
       setSessionConfigError('Original prompt cannot be empty.');
+      return;
+    }
+
+    if (!trimmedUrl) {
+      setSessionConfigError('Starting URL is required.');
       return;
     }
 
@@ -407,7 +449,7 @@ export default function GenerationViewer() {
       return;
     }
 
-    if (!promptChanged && !maxStepsChanged) {
+    if (!promptChanged && !maxStepsChanged && !urlChanged && !successChanged) {
       setSessionConfigError('No changes to save.');
       return;
     }
@@ -425,25 +467,53 @@ export default function GenerationViewer() {
         const { state: updatedState } = await api.updateGenerationMaxSteps(sessionId, parsedMaxSteps);
         setState(updatedState);
       }
+      if (urlChanged) {
+        const { state: updatedState } = await api.updateGenerationStartUrl(sessionId, trimmedUrl);
+        setState(updatedState);
+      }
+      if (successChanged) {
+        const { state: updatedState } = await api.updateGenerationSuccessCriteria(
+          sessionId,
+          trimmedSuccess || undefined
+        );
+        setState(updatedState);
+      }
 
       setSessionConfigPrompt(trimmedPrompt);
       setSessionConfigMaxSteps(String(parsedMaxSteps));
+      setSessionConfigUrl(trimmedUrl);
+      setSessionConfigSuccessCriteria(trimmedSuccess);
 
-      if (promptChanged) {
+      if (promptChanged || urlChanged) {
         const restarted = await performRestart(true);
         if (!restarted) {
-          setSessionConfigError('Failed to restart after updating the prompt. Please restart manually.');
+          setSessionConfigError('Failed to restart after updating settings. Please restart manually.');
           return;
         }
       }
 
-      setEditingSessionConfig(false);
+      setSessionConfigEditing(false);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to update session configuration.';
       setSessionConfigError(message);
     } finally {
       setSavingSessionConfig(false);
+    }
+  }
+
+  async function handleToggleKeepBrowserOpen(nextValue: boolean) {
+    if (!sessionId) return;
+    setUpdatingKeepBrowserOpen(true);
+    try {
+      const { state: updatedState } = await api.updateGenerationKeepBrowserOpen(sessionId, nextValue);
+      setState(updatedState);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to update browser preference.';
+      setError(message);
+    } finally {
+      setUpdatingKeepBrowserOpen(false);
     }
   }
 
@@ -555,7 +625,7 @@ export default function GenerationViewer() {
     let position = 0;
 
     steps.forEach((step, idx) => {
-      if (step.screenshotPath) {
+      if (step.screenshotData || step.screenshotPath) {
         total += 1;
         if (idx === activeScreenshotIndex) {
           position = total;
@@ -617,37 +687,129 @@ export default function GenerationViewer() {
           </button>
         </div>
 
-        {/* Session Setup */}
-        {state && state.startUrl && state.goal && (
+        {state && (
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-900">Session Setup</h2>
-              <button
-                onClick={openSessionConfigEditor}
-                className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded"
-              >
-                Edit
-              </button>
+              {sessionConfigEditing ? (
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleCancelSessionConfigEditing}
+                    className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded"
+                    disabled={savingSessionConfig}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSaveSessionConfig}
+                    disabled={savingSessionConfig}
+                    className="px-4 py-1.5 text-sm text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {savingSessionConfig ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleEnableSessionConfigEditing}
+                  className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded"
+                >
+                  Edit settings
+                </button>
+              )}
             </div>
-            <div className="space-y-3">
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
                   Starting URL
                 </p>
-                <p className="text-sm font-mono text-blue-600">{state.startUrl}</p>
+                {sessionConfigEditing ? (
+                  <input
+                    type="url"
+                    value={sessionConfigUrl}
+                    onChange={(e) => setSessionConfigUrl(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                    placeholder="https://example.com/login"
+                    disabled={savingSessionConfig}
+                  />
+                ) : (
+                  <p className="text-sm font-mono text-blue-600 break-all">{state.startUrl}</p>
+                )}
               </div>
               <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
                   Max Steps
                 </p>
-                <p className="text-sm text-gray-900">
-                  {state.maxSteps}{' '}
-                  <span className="text-xs text-gray-500">(current session limit)</span>
-                </p>
+                {sessionConfigEditing ? (
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={sessionConfigMaxSteps}
+                    onChange={(e) => setSessionConfigMaxSteps(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                    disabled={savingSessionConfig}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-900">
+                    {state.maxSteps}{' '}
+                    <span className="text-xs text-gray-500">(current session limit)</span>
+                  </p>
+                )}
               </div>
-              <p className="text-xs text-gray-500">
-                Updating the original prompt will restart the session and clear current progress.
-              </p>
+            </div>
+            <div className="mt-4 space-y-3">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Goal</p>
+                {sessionConfigEditing ? (
+                  <textarea
+                    value={sessionConfigPrompt}
+                    onChange={(e) => setSessionConfigPrompt(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                    rows={3}
+                    disabled={savingSessionConfig}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-900 whitespace-pre-line">{state.goal}</p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                  Success Criteria
+                </p>
+                {sessionConfigEditing ? (
+                  <textarea
+                    value={sessionConfigSuccessCriteria}
+                    onChange={(e) => setSessionConfigSuccessCriteria(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                    rows={3}
+                    disabled={savingSessionConfig}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-900 whitespace-pre-line">
+                    {state.successCriteria || 'Not specified'}
+                  </p>
+                )}
+              </div>
+            </div>
+            {sessionConfigError && (
+              <p className="mt-3 text-sm text-red-600">{sessionConfigError}</p>
+            )}
+            <div className="mt-4 border-t border-gray-100 pt-4">
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={state.keepBrowserOpen ?? false}
+                  onChange={(e) => handleToggleKeepBrowserOpen(e.target.checked)}
+                  className="mt-1 rounded"
+                  disabled={updatingKeepBrowserOpen}
+                />
+                <span className="text-sm text-gray-800">
+                  Leave the Chromium window open after generation completes
+                  <span className="block text-xs text-gray-500">
+                    Use this to inspect the final state before saving the test.
+                  </span>
+                </span>
+              </label>
             </div>
           </div>
         )}
@@ -909,7 +1071,7 @@ export default function GenerationViewer() {
                     </div>
                   </div>
                   <p className="text-sm text-gray-700 mb-2">{step.qaSummary}</p>
-                  {step.screenshotPath && (
+                  {(step.screenshotData || step.screenshotPath) && (
                     <div className="mt-3">
                       <button
                         type="button"
@@ -918,7 +1080,7 @@ export default function GenerationViewer() {
                         aria-label={`View screenshot for step ${step.stepNumber}`}
                       >
                         <img
-                          src={step.screenshotPath}
+                          src={step.screenshotData || step.screenshotPath}
                           alt={`Screenshot for step ${step.stepNumber}`}
                           loading="lazy"
                           className="max-h-48 w-full object-contain bg-gray-200 transition duration-150 group-hover:scale-[1.02]"
@@ -979,7 +1141,9 @@ export default function GenerationViewer() {
           </div>
         )}
       </div>
-      {activeScreenshotIndex !== null && activeScreenshotStep?.screenshotPath && (
+      {activeScreenshotIndex !== null &&
+        activeScreenshotStep &&
+        (activeScreenshotStep.screenshotData || activeScreenshotStep.screenshotPath) && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6"
           role="dialog"
@@ -1011,7 +1175,7 @@ export default function GenerationViewer() {
               </div>
               <div className="relative overflow-hidden rounded-lg bg-black">
                 <img
-                  src={activeScreenshotStep.screenshotPath}
+                  src={activeScreenshotStep.screenshotData || activeScreenshotStep.screenshotPath}
                   alt={`Screenshot for step ${activeScreenshotStep.stepNumber}`}
                   className="max-h-[70vh] w-full object-contain"
                 />
@@ -1037,83 +1201,6 @@ export default function GenerationViewer() {
                   Next
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {editingSessionConfig && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4 py-6">
-          <div className="w-full max-w-xl rounded-lg bg-white shadow-2xl">
-            <div className="border-b px-6 py-4">
-              <h3 className="text-lg font-semibold text-gray-900">Edit Session Setup</h3>
-              <p className="mt-1 text-sm text-gray-600">
-                Updating the original prompt restarts the session. Max steps can be adjusted without clearing progress.
-              </p>
-            </div>
-            <div className="space-y-4 px-6 py-4">
-              <div>
-                <label
-                  htmlFor="session-config-prompt"
-                  className="text-xs font-medium text-gray-500 uppercase tracking-wide"
-                >
-                  Original Prompt
-                </label>
-                <textarea
-                  id="session-config-prompt"
-                  value={sessionConfigPrompt}
-                  onChange={(e) => setSessionConfigPrompt(e.target.value)}
-                  className="mt-2 w-full min-h-[120px] rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
-                  placeholder="Describe the outcome you want the AI to achieve..."
-                  disabled={savingSessionConfig}
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="session-config-max-steps"
-                  className="text-xs font-medium text-gray-500 uppercase tracking-wide"
-                >
-                  Max Steps
-                </label>
-                <input
-                  id="session-config-max-steps"
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={sessionConfigMaxSteps}
-                  onChange={(e) => setSessionConfigMaxSteps(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
-                  disabled={savingSessionConfig}
-                />
-                <p className="mt-1 text-xs text-gray-500">
-                  The AI stops automatically after reaching this limit.
-                </p>
-              </div>
-              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                Changes to the prompt restart the generator and remove current steps and chat.
-              </div>
-              {sessionConfigError && (
-                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {sessionConfigError}
-                </div>
-              )}
-            </div>
-            <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
-              <button
-                type="button"
-                onClick={closeSessionConfigEditor}
-                disabled={savingSessionConfig}
-                className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900 disabled:opacity-40"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleSaveSessionConfig()}
-                disabled={savingSessionConfig}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                {savingSessionConfig ? 'Saving…' : 'Save Changes'}
-              </button>
             </div>
           </div>
         </div>

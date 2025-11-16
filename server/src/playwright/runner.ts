@@ -9,6 +9,7 @@ export interface RunTestOptions {
   testId: string;
   headed?: boolean;
   speed?: number;
+  keepOpen?: boolean;
 }
 
 export interface RunExecutionContext {
@@ -22,6 +23,7 @@ export interface RunExecutionContext {
     headed: boolean;
     speed: number;
     slowMo: number;
+    keepOpen: boolean;
   };
 }
 
@@ -35,7 +37,7 @@ const ARTIFACT_EXTENSIONS = ['.zip', '.webm', '.png'];
 export async function createRunExecutionContext(
   dataDir: string,
   testId: string,
-  preferences?: { headed?: boolean; speed?: number }
+  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean }
 ): Promise<RunExecutionContext> {
   const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}_${testId}`;
   const runDir = path.join(dataDir, 'runs', runId);
@@ -46,8 +48,9 @@ export async function createRunExecutionContext(
 
   const headed = typeof preferences?.headed === 'boolean' ? preferences.headed : true;
   const rawSpeed = typeof preferences?.speed === 'number' ? preferences.speed : 1;
-  const normalizedSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
+  const normalizedSpeed = Number.isFinite(rawSpeed) ? Math.min(1, Math.max(0.5, rawSpeed)) : 1;
   const slowMo = normalizedSpeed < 1 ? Math.round((1 - normalizedSpeed) * 1000) : 0;
+  const keepOpen = Boolean(preferences?.keepOpen);
 
   return {
     dataDir,
@@ -59,9 +62,15 @@ export async function createRunExecutionContext(
     options: {
       headed,
       speed: normalizedSpeed,
-      slowMo
+      slowMo,
+      keepOpen
     }
   };
+}
+
+function buildArtifactUrl(runId: string, file: string): string {
+  const encoded = encodeURIComponent(file);
+  return `/api/runs/${runId}/artifacts/${encoded}`;
 }
 
 export async function finalizeRunExecution(
@@ -133,11 +142,21 @@ export async function finalizeRunExecution(
 
   // Locate trace artifact if present
   let tracePath: string | undefined;
+  let videoPath: string | undefined;
+  const screenshotPaths: string[] = [];
   try {
     const runFiles = await fs.readdir(context.runDir);
     const traceFile = runFiles.find((file) => file.endsWith('.zip'));
     if (traceFile) {
       tracePath = path.join(context.runDir, traceFile);
+    }
+
+    for (const file of runFiles) {
+      if (file.endsWith('.png')) {
+        screenshotPaths.push(buildArtifactUrl(context.runId, file));
+      } else if (file.endsWith('.webm')) {
+        videoPath = buildArtifactUrl(context.runId, file);
+      }
     }
   } catch {
     // Ignore trace discovery errors
@@ -151,6 +170,8 @@ export async function finalizeRunExecution(
     startedAt: new Date(context.startTime).toISOString(),
     endedAt: new Date(endTime).toISOString(),
     tracePath,
+    videoPath,
+    screenshotPaths: screenshotPaths.length ? screenshotPaths : undefined,
     error
   };
 
@@ -162,7 +183,8 @@ export async function finalizeRunExecution(
 export async function runTest(options: RunTestOptions): Promise<RunResult> {
   const context = await createRunExecutionContext(options.dataDir, options.testId, {
     headed: options.headed,
-    speed: options.speed
+    speed: options.speed,
+    keepOpen: options.keepOpen
   });
   const npx = await resolveNpxInvocation();
   const baseEnv = npx.env ?? process.env;
@@ -176,13 +198,17 @@ export async function runTest(options: RunTestOptions): Promise<RunResult> {
     if (context.options.headed) {
       args.push('--headed');
     }
+    if (context.options.keepOpen && context.options.headed) {
+      args.push('--debug');
+    }
 
     const proc: ChildProcessWithoutNullStreams = spawn(npx.command, args, {
       cwd: context.dataDir,
       env: {
         ...baseEnv,
         TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
-        TRAILWRIGHT_SLOWMO: String(context.options.slowMo)
+        TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
+        TRAILWRIGHT_KEEP_BROWSER_OPEN: context.options.keepOpen ? 'true' : 'false'
       }
     });
 

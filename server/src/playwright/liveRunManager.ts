@@ -88,7 +88,8 @@ export class LiveRunSession {
       result: this.result,
       options: {
         headed: this.options.headed,
-        speed: this.options.speed
+        speed: this.options.speed,
+        keepOpen: this.options.keepOpen
       }
     };
   }
@@ -398,7 +399,7 @@ export class LiveRunSession {
 export async function startLiveRun(
   dataDir: string,
   testId: string,
-  preferences?: { headed?: boolean; speed?: number }
+  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean }
 ): Promise<LiveRunSession> {
   const context = await createRunExecutionContext(dataDir, testId, preferences);
   const npx = await resolveNpxInvocation();

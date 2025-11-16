@@ -1,5 +1,7 @@
 import express from 'express';
 import { spawn } from 'child_process';
+import path from 'node:path';
+import fs from 'node:fs/promises';
 import { CONFIG } from '../config.js';
 import { getRunResult, listRuns } from '../playwright/runner.js';
 import {
@@ -49,9 +51,17 @@ router.post('/', async (req, res) => {
       speedPreference = Math.min(2, Math.max(0.5, speedPreference));
     }
 
+    const keepBrowserOpen =
+      typeof req.body.keepBrowserOpen === 'boolean'
+        ? req.body.keepBrowserOpen
+        : typeof req.body.keepBrowserOpen === 'string'
+          ? req.body.keepBrowserOpen.toLowerCase() !== 'false'
+          : false;
+
     const session = await startLiveRun(CONFIG.DATA_DIR, testId, {
       headed: headedPreference,
-      speed: speedPreference
+      speed: speedPreference,
+      keepOpen: keepBrowserOpen
     });
     return res.status(202).json({ runId: session.id });
   } catch (err: any) {
@@ -243,6 +253,21 @@ router.post('/:runId/trace', async (req, res) => {
     res.json({ success: true, message: 'Trace viewer opened' });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Unable to open trace viewer' });
+  }
+});
+
+router.get('/:runId/artifacts/:fileName', async (req, res) => {
+  const { runId, fileName } = req.params;
+  const safeName = path.basename(fileName);
+  const runDir = path.join(CONFIG.DATA_DIR, 'runs', runId);
+  const filePath = path.join(runDir, safeName);
+
+  try {
+    await fs.access(filePath);
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.sendFile(filePath);
+  } catch {
+    res.status(404).json({ error: 'Artifact not found' });
   }
 });
 

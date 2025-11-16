@@ -4,6 +4,7 @@ export interface TestMetadata {
   description?: string;
   tags?: string[];
   prompt?: string;
+  successCriteria?: string;
   steps?: TestStepMetadata[];
   createdAt: string;
   updatedAt?: string;
@@ -63,6 +64,7 @@ export interface ChatMessage {
 export interface RunOptionSettings {
   headed: boolean;
   speed: number;
+  keepOpen?: boolean;
 }
 
 export interface LiveRunState {
@@ -95,6 +97,7 @@ export interface RecordedStep {
   qaSummary: string;
   timestamp: string;
   screenshotPath?: string;
+  screenshotData?: string;
 }
 
 export type CaptureMode = 'accessibility' | 'screenshot' | 'hybrid';
@@ -105,6 +108,7 @@ export interface LiveGenerationOptions {
   successCriteria?: string;
   maxSteps?: number;
   captureMode?: CaptureMode;
+  keepBrowserOpen?: boolean;
 }
 
 export type GenerationStatus =
@@ -132,6 +136,7 @@ export interface LiveGenerationState {
   chat: ChatMessage[];
   error?: string;
   savedTestId?: string;
+  keepBrowserOpen?: boolean;
 }
 
 export type LiveGenerationEventType =

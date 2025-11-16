@@ -17,6 +17,7 @@ export type ApiTestMetadata = {
   name: string;
   description?: string;
   prompt?: string;
+  successCriteria?: string;
   tags?: string[];
   steps?: ApiTestStepMetadata[];
   createdAt: string;
@@ -117,17 +118,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(metadata)
     }),
-  editTest: (id: string) =>
-    fetchApi<{ success: boolean; filePath: string; message: string }>(`/tests/${id}/edit`, {
-      method: 'POST'
-    }),
-  runTest: (testId: string, options?: { headed?: boolean; speed?: number }) =>
+  runTest: (testId: string, options?: { headed?: boolean; speed?: number; keepBrowserOpen?: boolean }) =>
     fetchApi<{ runId: string }>('/runs', {
       method: 'POST',
       body: JSON.stringify({ testId, ...(options ?? {}) })
     }),
   listRuns: (testId?: string) =>
-    fetchApi<{ runs: any[] }>(`/runs${testId ? `?testId=${testId}` : ''}`),
+    fetchApi<{ runs: RunResult[] }>(`/runs${testId ? `?testId=${testId}` : ''}`),
   getRun: (runId: string) => fetchApi<{ run: LiveRunState }>(`/runs/${runId}`),
   controlRun: (runId: string, action: RunControlAction) =>
     fetchApi<{ success: boolean }>(`/runs/${runId}/control`, {
@@ -213,6 +210,19 @@ export const api = {
     fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/max-steps`, {
       method: 'PATCH',
       body: JSON.stringify({ maxSteps })
+    }),
+  updateGenerationKeepBrowserOpen: (sessionId: string, keepBrowserOpen: boolean) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(
+      `/generate/${sessionId}/keep-browser-open`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ keepBrowserOpen })
+      }
+    ),
+  updateGenerationStartUrl: (sessionId: string, startUrl: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/start-url`, {
+      method: 'PATCH',
+      body: JSON.stringify({ startUrl })
     }),
   sendGenerationChat: (sessionId: string, message: string) =>
     fetchApi<{ success: boolean; chat: ChatMessage[]; state: LiveGenerationState }>(

@@ -28,6 +28,7 @@ type PersistOptions = {
   description?: string;
   tags?: string[];
   prompt?: string;
+  successCriteria?: string;
 };
 
 function formatAutoTestName(goal: string): string {
@@ -62,6 +63,8 @@ async function persistGeneratorTest(
       options.description?.trim() || existing?.description || `Goal: ${state.goal}`,
     tags: summarizeTags(options.tags ?? existing?.tags),
     prompt: options.prompt?.trim() || state.goal,
+    successCriteria:
+      options.successCriteria?.trim() || existing?.successCriteria || state.successCriteria,
     steps: state.recordedSteps.map((step) => ({
       number: step.stepNumber,
       qaSummary: step.qaSummary,
@@ -350,6 +353,40 @@ router.patch('/:sessionId/max-steps', (req, res) => {
   }
 });
 
+router.patch('/:sessionId/start-url', (req, res) => {
+  const { sessionId } = req.params;
+  const { startUrl } = req.body ?? {};
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!startUrl || typeof startUrl !== 'string') {
+    return res.status(400).json({ error: 'startUrl is required' });
+  }
+
+  try {
+    generator.updateStartUrl(startUrl);
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to update start URL' });
+  }
+});
+
+router.patch('/:sessionId/keep-browser-open', (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  const keep = Boolean(req.body?.keepBrowserOpen);
+  generator.updateKeepBrowserOpen(keep);
+  res.json({ success: true, state: generator.getState() });
+});
+
 router.post('/:sessionId/chat', async (req, res) => {
   const { sessionId } = req.params;
   const { message } = req.body;
@@ -414,7 +451,7 @@ router.post('/:sessionId/suggest-name', async (req, res) => {
  */
 router.post('/:sessionId/save', async (req, res) => {
   const { sessionId } = req.params;
-  const { name, description, tags, prompt } = req.body || {};
+  const { name, description, tags, prompt, successCriteria } = req.body || {};
 
   const generator = sessions.get(sessionId);
 
@@ -429,7 +466,13 @@ router.post('/:sessionId/save', async (req, res) => {
   }
 
   try {
-    const metadata = await persistGeneratorTest(generator, { name, description, tags, prompt });
+    const metadata = await persistGeneratorTest(generator, {
+      name,
+      description,
+      tags,
+      prompt,
+      successCriteria
+    });
 
     broadcastSessionEvent(sessionId, {
       type: 'auto_saved',

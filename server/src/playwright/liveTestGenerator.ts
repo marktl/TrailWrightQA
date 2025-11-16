@@ -30,6 +30,7 @@ type NormalizedGenerationOptions = {
   maxSteps: number;
   captureMode: CaptureMode;
   successCriteria?: string;
+  keepBrowserOpen: boolean;
 };
 
 export class LiveTestGenerator extends EventEmitter {
@@ -81,7 +82,8 @@ export class LiveTestGenerator extends EventEmitter {
       goal: options.goal,
       maxSteps: options.maxSteps || DEFAULT_MAX_STEPS,
       captureMode: options.captureMode || 'accessibility',
-      successCriteria: options.successCriteria?.trim() || undefined
+      successCriteria: options.successCriteria?.trim() || undefined,
+      keepBrowserOpen: Boolean(options.keepBrowserOpen)
     };
 
     this.provider = provider;
@@ -111,7 +113,8 @@ export class LiveTestGenerator extends EventEmitter {
       logs: [...this.logs],
       chat: [...this.chat],
       error: this.error,
-      savedTestId: this.persistedTest?.id
+      savedTestId: this.persistedTest?.id,
+      keepBrowserOpen: this.options.keepBrowserOpen
     };
   }
 
@@ -216,10 +219,13 @@ export class LiveTestGenerator extends EventEmitter {
 
         // Allow page to settle before capturing screenshot
         await this.page.waitForTimeout(500);
-        const screenshotPath = await this.captureStepScreenshot(step);
+        const screenshot = await this.captureStepScreenshot(step);
 
         // Record step
-        const recorded = createRecordedStep(step, action, { screenshotPath });
+        const recorded = createRecordedStep(step, action, {
+          screenshotPath: screenshot?.path,
+          screenshotData: screenshot?.data
+        });
         this.recordedSteps.push(recorded);
         this.nextStepNumber = this.recordedSteps.length + 1;
         this.consumeUserCorrection();
@@ -390,9 +396,13 @@ export class LiveTestGenerator extends EventEmitter {
     this.isPaused = false;
 
     if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      this.page = null;
+      if (this.options.keepBrowserOpen) {
+        this.log('Browser left open for inspection.');
+      } else {
+        await this.browser.close();
+        this.browser = null;
+        this.page = null;
+      }
     }
   }
 
@@ -430,6 +440,12 @@ export class LiveTestGenerator extends EventEmitter {
   updateSuccessCriteria(newCriteria: string | undefined): void {
     const trimmed = newCriteria?.trim();
     this.options.successCriteria = trimmed || undefined;
+    this.touch();
+  }
+
+  updateKeepBrowserOpen(keepOpen: boolean): void {
+    this.options.keepBrowserOpen = keepOpen;
+    this.log(keepOpen ? 'Will leave browser open when run completes' : 'Browser will close automatically on completion');
     this.touch();
   }
 
@@ -589,6 +605,17 @@ export class LiveTestGenerator extends EventEmitter {
     this.touch();
   }
 
+  updateStartUrl(newUrl: string): void {
+    const trimmed = newUrl.trim();
+    if (!trimmed) {
+      throw new Error('Start URL cannot be empty');
+    }
+
+    this.options.startUrl = trimmed;
+    this.log(`Start URL updated`);
+    this.touch();
+  }
+
   /**
    * Generate the complete test file code
    */
@@ -644,7 +671,9 @@ ${stepCode}
     }
   }
 
-  private async captureStepScreenshot(stepNumber: number): Promise<string | undefined> {
+  private async captureStepScreenshot(
+    stepNumber: number
+  ): Promise<{ path: string; data: string } | undefined> {
     if (!this.page || !this.storageReady) {
       return undefined;
     }
@@ -655,11 +684,16 @@ ${stepCode}
     const filePath = path.join(this.screenshotDir, filename);
 
     try {
-      await this.page.screenshot({
+      const buffer = await this.page.screenshot({
         path: filePath,
         fullPage: this.options.captureMode === 'screenshot'
       });
-      return `/api/generate/${this.sessionId}/screenshots/${filename}`;
+
+      const dataUri = `data:image/png;base64,${buffer.toString('base64')}`;
+      return {
+        path: `/api/generate/${this.sessionId}/screenshots/${filename}`,
+        data: dataUri
+      };
     } catch (error) {
       if (!this.screenshotCaptureErrorLogged) {
         this.log('⚠️ Unable to capture step screenshots. Continuing without images.');
