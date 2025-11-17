@@ -6,7 +6,8 @@ import type {
   ApiTest,
   ApiTestMetadata,
   RunStreamEvent,
-  RunControlAction
+  RunControlAction,
+  ApiCredential
 } from '../api/client';
 import type {
   LiveRunState,
@@ -14,7 +15,8 @@ import type {
   StepSummary,
   RunStatus,
   ChatMessage,
-  RunResult
+  RunResult,
+  RunScreenshot
 } from '../../../shared/types';
 
 const statusLabels: Record<RunStatus, string> = {
@@ -75,6 +77,11 @@ export default function TestWorkspace() {
   const [code, setCode] = useState('');
   const [savingMeta, setSavingMeta] = useState(false);
   const [metaMessage, setMetaMessage] = useState<string | null>(null);
+  const [folder, setFolder] = useState('');
+  const [credentialId, setCredentialId] = useState('');
+  const [credentials, setCredentials] = useState<ApiCredential[]>([]);
+  const [loadingCredentials, setLoadingCredentials] = useState(true);
+  const [credentialLoadError, setCredentialLoadError] = useState<string | null>(null);
 
   const [runs, setRuns] = useState<RunResult[]>([]);
   const [loadingRuns, setLoadingRuns] = useState(true);
@@ -126,6 +133,8 @@ export default function TestWorkspace() {
         setGoal(test.metadata.prompt || '');
         setSuccessCriteria(test.metadata.successCriteria || '');
         setCode(test.code);
+        setFolder(test.metadata.folder || '');
+        setCredentialId(test.metadata.credentialId || '');
       } catch (err) {
         console.error('Failed to load test', err);
       }
@@ -147,6 +156,33 @@ export default function TestWorkspace() {
         }
       })
       .catch(() => void 0);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCredentialLoadError(null);
+    setLoadingCredentials(true);
+    api
+      .listCredentials()
+      .then(({ credentials: list }) => {
+        if (!cancelled) {
+          setCredentials(list);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load credentials', err);
+        if (!cancelled) {
+          setCredentialLoadError('Unable to load credentials');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingCredentials(false);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -293,6 +329,8 @@ export default function TestWorkspace() {
           tags,
           prompt: goal.trim() || undefined,
           successCriteria: successCriteria.trim() || undefined,
+          folder: folder.trim() || undefined,
+          credentialId: credentialId || undefined,
           updatedAt: new Date().toISOString()
         },
         code
@@ -305,8 +343,10 @@ export default function TestWorkspace() {
               metadata: {
                 ...prev.metadata,
                 name: trimmedName,
-                description: description.trim() || undefined,
-                tags
+              description: description.trim() || undefined,
+                tags,
+                folder: folder.trim() || undefined,
+                credentialId: credentialId || undefined
               }
             }
           : prev
@@ -457,6 +497,22 @@ export default function TestWorkspace() {
       return aTime - bTime;
     });
   }, [runState?.steps]);
+  const screenshotDetails: RunScreenshot[] = useMemo(() => {
+    if (runState?.result?.screenshots) {
+      return runState.result.screenshots;
+    }
+    if (runState?.result?.screenshotPaths) {
+      return runState.result.screenshotPaths.map((path, index) => ({
+        path,
+        stepTitle: `Screenshot ${index + 1}`,
+        testTitle: undefined,
+        description: undefined,
+        capturedAt: undefined,
+        attachmentName: undefined
+      }));
+    }
+    return [];
+  }, [runState?.result?.screenshots, runState?.result?.screenshotPaths]);
 
   const currentStatus: RunStatus = runState?.status ?? 'queued';
   const testTitle = name || test?.metadata.name || 'Test Workspace';
@@ -516,6 +572,40 @@ export default function TestWorkspace() {
                     onChange={(e) => setTagsInput(e.target.value)}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Folder / Suite</label>
+                  <input
+                    type="text"
+                    value={folder}
+                    onChange={(e) => setFolder(e.target.value)}
+                    placeholder="e.g., Authentication"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-500">Organize tests by product area or release suite.</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Default Credential</label>
+                  {credentialLoadError ? (
+                    <p className="text-xs text-red-600">{credentialLoadError}</p>
+                  ) : (
+                    <select
+                      value={credentialId}
+                      disabled={loadingCredentials}
+                      onChange={(e) => setCredentialId(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">No credential</option>
+                      {credentials.map((cred) => (
+                        <option key={cred.id} value={cred.id}>
+                          {cred.name} · {cred.username}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <p className="text-xs text-gray-500">
+                    Manage credentials in Settings. They are injected at runtime.
+                  </p>
                 </div>
               </div>
 
@@ -661,28 +751,55 @@ export default function TestWorkspace() {
                   </div>
 
                   <div>
-                    <h3 className="text-sm font-semibold uppercase text-gray-500">Screenshots</h3>
-                    {runState?.result?.screenshotPaths?.length ? (
-                      <div className="mt-3 grid grid-cols-2 gap-3">
-                        {runState.result.screenshotPaths.map((src, index) => (
-                          <a
-                            key={`${src}-${index}`}
-                            href={src}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="block overflow-hidden rounded-lg border"
+                    <h3 className="text-sm font-semibold uppercase text-gray-500">Screenshot Timeline</h3>
+                    {screenshotDetails.length === 0 ? (
+                      <p className="mt-2 text-sm text-gray-500">
+                        No screenshots captured for this run.
+                      </p>
+                    ) : (
+                      <div className="mt-3 space-y-3">
+                        {screenshotDetails.map((shot, index) => (
+                          <div
+                            key={`${shot.path}-${index}`}
+                            className="flex flex-col gap-3 rounded-lg border border-gray-200 p-3 sm:flex-row sm:items-center"
                           >
-                            <img
-                              src={src}
-                              alt={`Run screenshot ${index + 1}`}
-                              className="h-32 w-full object-cover"
-                              loading="lazy"
-                            />
-                          </a>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold text-gray-900">
+                                {shot.stepTitle || `Screenshot ${index + 1}`}
+                              </p>
+                              {shot.testTitle && (
+                                <p className="text-xs text-gray-500">{shot.testTitle}</p>
+                              )}
+                              {shot.capturedAt && (
+                                <p className="text-xs text-gray-400">
+                                  {formatTimestamp(shot.capturedAt)}
+                                </p>
+                              )}
+                              <a
+                                href={shot.path}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs text-blue-600 hover:text-blue-800"
+                              >
+                                Open full size →
+                              </a>
+                            </div>
+                            <a
+                              href={shot.path}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="block overflow-hidden rounded-lg border border-gray-200"
+                            >
+                              <img
+                                src={shot.path}
+                                alt={shot.stepTitle || `Run screenshot ${index + 1}`}
+                                className="h-28 w-40 object-cover"
+                                loading="lazy"
+                              />
+                            </a>
+                          </div>
                         ))}
                       </div>
-                    ) : (
-                      <p className="mt-2 text-sm text-gray-500">No screenshots captured for this run.</p>
                     )}
                   </div>
 

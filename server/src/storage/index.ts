@@ -2,9 +2,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
 import { resolveNpxInvocation } from '../utils/npx.js';
+import { ensureCredentialHelper } from './credentialBridge.js';
 
 export * from './config.js';
 export * from './tests.js';
+export * from './credentials.js';
 
 async function ensurePlaywrightDependencies(dataDir: string): Promise<void> {
   const packageJsonPath = path.join(dataDir, 'package.json');
@@ -92,4 +94,5 @@ export async function initStorage(dataDir: string): Promise<void> {
 
   // Ensure Playwright dependencies are installed
   await ensurePlaywrightDependencies(dataDir);
+  await ensureCredentialHelper(dataDir);
 }

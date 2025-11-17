@@ -1,8 +1,11 @@
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
-import type { RunResult } from '../types.js';
+import type { Dirent } from 'fs';
+import type { RunResult, RunScreenshot } from '../types.js';
+import { serializeCredentialsBlob } from '../storage/credentials.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
+import { loadTest, saveTest } from '../storage/tests.js';
 
 export interface RunTestOptions {
   dataDir: string;
@@ -32,7 +35,128 @@ export interface FinalizeRunOptions {
   terminationReason?: string;
 }
 
-const ARTIFACT_EXTENSIONS = ['.zip', '.webm', '.png'];
+type ArtifactRecord = {
+  filename: string;
+  sourceKey: string;
+  ext: string;
+};
+
+function normalizePath(value: string): string {
+  return path.resolve(value).replace(/\\/g, '/');
+}
+
+async function fileExists(target: string): Promise<boolean> {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function moveLatestArtifacts(context: RunExecutionContext): Promise<ArtifactRecord[]> {
+  const latestDir = path.join(context.dataDir, 'runs', 'latest');
+  const moved: ArtifactRecord[] = [];
+
+  async function walk(current: string): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+        continue;
+      }
+
+      const ext = path.extname(entry.name).toLowerCase();
+      const sourceKey = normalizePath(entryPath);
+      let targetName = entry.name;
+      const baseName = path.basename(entry.name, ext);
+      let attempt = 1;
+      while (await fileExists(path.join(context.runDir, targetName))) {
+        targetName = `${baseName}-${attempt}${ext}`;
+        attempt += 1;
+      }
+
+      const destination = path.join(context.runDir, targetName);
+      try {
+        await fs.rename(entryPath, destination);
+      } catch {
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+        await fs.copyFile(entryPath, destination);
+        await fs.unlink(entryPath).catch(() => void 0);
+      }
+
+      moved.push({ filename: targetName, sourceKey, ext });
+    }
+  }
+
+  await walk(latestDir);
+
+  try {
+    await fs.rm(latestDir, { recursive: true, force: true });
+  } catch {
+    // ignore cleanup errors
+  }
+  await fs.mkdir(latestDir, { recursive: true });
+
+  return moved;
+}
+
+type ScreenshotAttachment = {
+  sourceKey: string;
+  attachmentName?: string;
+  testTitle?: string;
+  capturedAt?: string;
+};
+
+function collectScreenshotAttachments(playwrightResults: any): ScreenshotAttachment[] {
+  const attachments: ScreenshotAttachment[] = [];
+
+  function walkSuite(suite: any): void {
+    if (!suite) return;
+
+    if (Array.isArray(suite.specs)) {
+      for (const spec of suite.specs) {
+        for (const test of spec.tests ?? []) {
+          for (const result of test.results ?? []) {
+            const capturedAt = result.startTime || result.startedAt || result.startWallTime;
+            for (const attachment of result.attachments ?? []) {
+              if (!attachment?.path || typeof attachment.path !== 'string') {
+                continue;
+              }
+              const contentType = String(attachment.contentType || '').toLowerCase();
+              const attachmentName = String(attachment.name || '');
+              if (
+                contentType.includes('image/') ||
+                attachmentName.toLowerCase().includes('screenshot')
+              ) {
+                attachments.push({
+                  sourceKey: normalizePath(attachment.path),
+                  attachmentName: attachment.name,
+                  testTitle: spec?.title || test?.title,
+                  capturedAt: capturedAt ? new Date(capturedAt).toISOString() : undefined
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(suite.suites)) {
+      suite.suites.forEach((child: any) => walkSuite(child));
+    }
+  }
+
+  (playwrightResults?.suites ?? []).forEach((suite: any) => walkSuite(suite));
+  return attachments;
+}
 
 export async function createRunExecutionContext(
   dataDir: string,
@@ -94,19 +218,7 @@ export async function finalizeRunExecution(
   }
 
   // Move generated artifacts into run directory
-  const latestDir = path.join(context.dataDir, 'runs', 'latest');
-  try {
-    const files = await fs.readdir(latestDir);
-    await Promise.all(
-      files
-        .filter((file) => ARTIFACT_EXTENSIONS.some((ext) => file.endsWith(ext)))
-        .map((file) =>
-          fs.rename(path.join(latestDir, file), path.join(context.runDir, file)).catch(() => void 0)
-        )
-    );
-  } catch {
-    // Ignore if there is no latest directory or artifacts
-  }
+  const artifactRecords = await moveLatestArtifacts(context);
 
   let status: RunResult['status'] = 'passed';
   let error: string | undefined;
@@ -140,27 +252,47 @@ export async function finalizeRunExecution(
     error = stderr || 'Test execution failed';
   }
 
-  // Locate trace artifact if present
-  let tracePath: string | undefined;
-  let videoPath: string | undefined;
-  const screenshotPaths: string[] = [];
-  try {
-    const runFiles = await fs.readdir(context.runDir);
-    const traceFile = runFiles.find((file) => file.endsWith('.zip'));
-    if (traceFile) {
-      tracePath = path.join(context.runDir, traceFile);
-    }
+  const traceRecord =
+    artifactRecords.find((record) => record.ext === '.zip' && record.filename.includes('trace')) ||
+    artifactRecords.find((record) => record.ext === '.zip');
+  const videoRecord = artifactRecords.find((record) => record.ext === '.webm');
 
-    for (const file of runFiles) {
-      if (file.endsWith('.png')) {
-        screenshotPaths.push(buildArtifactUrl(context.runId, file));
-      } else if (file.endsWith('.webm')) {
-        videoPath = buildArtifactUrl(context.runId, file);
-      }
+  const screenshotAttachments = collectScreenshotAttachments(playwrightResults);
+  const matchedScreenshots = new Set<string>();
+  const screenshotDetails: RunScreenshot[] = [];
+
+  for (const attachment of screenshotAttachments) {
+    const record = artifactRecords.find(
+      (artifact) => artifact.ext === '.png' && artifact.sourceKey === attachment.sourceKey
+    );
+    if (!record) {
+      continue;
     }
-  } catch {
-    // Ignore trace discovery errors
+    matchedScreenshots.add(record.filename);
+    screenshotDetails.push({
+      path: buildArtifactUrl(context.runId, record.filename),
+      stepTitle: attachment.attachmentName || undefined,
+      testTitle: attachment.testTitle,
+      capturedAt: attachment.capturedAt,
+      attachmentName: attachment.attachmentName
+    });
   }
+
+  const remainingScreenshots = artifactRecords.filter(
+    (record) => record.ext === '.png' && !matchedScreenshots.has(record.filename)
+  );
+  remainingScreenshots.forEach((record, index) => {
+    screenshotDetails.push({
+      path: buildArtifactUrl(context.runId, record.filename),
+      stepTitle: `Screenshot ${screenshotDetails.length + index + 1}`
+    });
+  });
+
+  const screenshotPaths = screenshotDetails.map((detail) => detail.path);
+  const tracePath = traceRecord ? path.join(context.runDir, traceRecord.filename) : undefined;
+  const videoPath = videoRecord
+    ? buildArtifactUrl(context.runId, videoRecord.filename)
+    : undefined;
 
   const result: RunResult = {
     id: context.runId,
@@ -172,12 +304,36 @@ export async function finalizeRunExecution(
     tracePath,
     videoPath,
     screenshotPaths: screenshotPaths.length ? screenshotPaths : undefined,
+    screenshots: screenshotDetails.length ? screenshotDetails : undefined,
     error
   };
 
   await fs.writeFile(path.join(context.runDir, 'result.json'), JSON.stringify(result, null, 2));
+  await updateTestRunMetadata(context, result).catch(() => void 0);
 
   return result;
+}
+
+async function updateTestRunMetadata(
+  context: RunExecutionContext,
+  result: RunResult
+): Promise<void> {
+  try {
+    const test = await loadTest(context.dataDir, context.testId);
+    test.metadata = {
+      ...test.metadata,
+      lastRunAt: result.endedAt,
+      lastRunStatus: result.status,
+      lastRunId: result.id,
+      updatedAt: new Date().toISOString()
+    };
+    await saveTest(context.dataDir, test);
+  } catch (error) {
+    console.warn(
+      `[runner] Unable to update run metadata for ${context.testId}:`,
+      (error as Error)?.message || error
+    );
+  }
 }
 
 export async function runTest(options: RunTestOptions): Promise<RunResult> {
@@ -188,6 +344,7 @@ export async function runTest(options: RunTestOptions): Promise<RunResult> {
   });
   const npx = await resolveNpxInvocation();
   const baseEnv = npx.env ?? process.env;
+  const credentialsBlob = await serializeCredentialsBlob(options.dataDir);
 
   // Use relative path from dataDir since that's our cwd
   // Normalize to forward slashes for cross-platform compatibility
@@ -202,14 +359,17 @@ export async function runTest(options: RunTestOptions): Promise<RunResult> {
       args.push('--debug');
     }
 
+    const env = {
+      ...baseEnv,
+      TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
+      TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
+      TRAILWRIGHT_KEEP_BROWSER_OPEN: context.options.keepOpen ? 'true' : 'false',
+      ...(credentialsBlob ? { TRAILWRIGHT_CREDENTIALS_BLOB: credentialsBlob } : {})
+    };
+
     const proc: ChildProcessWithoutNullStreams = spawn(npx.command, args, {
       cwd: context.dataDir,
-      env: {
-        ...baseEnv,
-        TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
-        TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
-        TRAILWRIGHT_KEEP_BROWSER_OPEN: context.options.keepOpen ? 'true' : 'false'
-      }
+      env
     });
 
     let stderr = '';

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
-import type { ApiTestMetadata } from '../api/client';
+import type { ApiTestMetadata, ApiCredential } from '../api/client';
 import type {
   LiveGenerationState,
   LiveGenerationEvent,
@@ -38,6 +38,17 @@ export default function GenerationViewer() {
   const [activeScreenshotIndex, setActiveScreenshotIndex] = useState<number | null>(null);
   const [savedTest, setSavedTest] = useState<ApiTestMetadata | null>(null);
   const [autoSaveNotice, setAutoSaveNotice] = useState<string | null>(null);
+  const [credentials, setCredentials] = useState<ApiCredential[]>([]);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveForm, setSaveForm] = useState({
+    name: '',
+    description: '',
+    tagsInput: 'ai-generated, live-session',
+    folder: '',
+    credentialId: ''
+  });
+  const [saveModalError, setSaveModalError] = useState<string | null>(null);
+  const [savingTest, setSavingTest] = useState(false);
 
   useEffect(() => {
     if (!sessionId) {
@@ -197,6 +208,21 @@ export default function GenerationViewer() {
     }
     void hydrateSavedTest(savedId);
   }, [state?.savedTestId, savedTest?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listCredentials()
+      .then(({ credentials: list }) => {
+        if (!cancelled) {
+          setCredentials(list);
+        }
+      })
+      .catch(() => void 0);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (sessionConfigEditing) {
@@ -522,6 +548,7 @@ export default function GenerationViewer() {
 
     setIsSaving(true);
     setSaveError(null);
+    setSaveModalError(null);
 
     let suggestedName = savedTest?.name || steps[0]?.qaSummary || 'AI Generated Test';
 
@@ -532,37 +559,56 @@ export default function GenerationViewer() {
           suggestedName = aiSuggestedName.trim();
         }
       }
+      setSaveForm({
+        name: suggestedName,
+        description: savedTest?.description || state?.goal || '',
+        tagsInput: (savedTest?.tags ?? ['ai-generated', 'live-session']).join(', '),
+        folder: savedTest?.folder || '',
+        credentialId: savedTest?.credentialId || state?.credentialId || ''
+      });
+      setSaveModalOpen(true);
     } catch (err) {
-      console.warn('Failed to fetch AI suggested test name', err);
-    }
-
-    const testName = window.prompt('Give your test a name:', suggestedName);
-
-    if (!testName) {
+      const message = err instanceof Error ? err.message : 'Failed to prepare save form';
+      setSaveError(message);
+    } finally {
       setIsSaving(false);
-      return;
     }
+  }
 
-    const trimmedName = testName.trim();
+  async function submitSaveForm() {
+    if (!sessionId) return;
+    const trimmedName = saveForm.name.trim();
     if (!trimmedName) {
-      setIsSaving(false);
+      setSaveModalError('Test name is required.');
       return;
     }
+
+    const tags = saveForm.tagsInput
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+
+    setSavingTest(true);
+    setSaveModalError(null);
 
     try {
       const { test } = await api.saveGeneratedTest(sessionId, {
         name: trimmedName,
-        tags: ['ai-generated', 'live-session']
+        description: saveForm.description.trim() || undefined,
+        tags: tags.length ? tags : undefined,
+        folder: saveForm.folder.trim() || undefined,
+        credentialId: saveForm.credentialId || undefined
       });
       setSavedTest(test);
       setState((prev) => (prev ? { ...prev, savedTestId: test.id } : prev));
       setAutoSaveNotice(`Saved as "${test.name}"`);
+      setSaveModalOpen(false);
       setTimeout(() => setAutoSaveNotice(null), 5000);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save test';
-      setSaveError(message);
+      setSaveModalError(message);
     } finally {
-      setIsSaving(false);
+      setSavingTest(false);
     }
   }
 
@@ -789,6 +835,22 @@ export default function GenerationViewer() {
                     {state.successCriteria || 'Not specified'}
                   </p>
                 )}
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                  Credential
+                </p>
+                {state.credentialSummary ? (
+                  <p className="text-sm text-gray-900">
+                    {state.credentialSummary.name}{' '}
+                    <span className="text-xs text-gray-500">
+                      ({state.credentialSummary.username})
+                    </span>
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-500">Not attached</p>
+                )}
+                <p className="text-xs text-gray-400">Add or change the credential when saving.</p>
               </div>
             </div>
             {sessionConfigError && (
@@ -1141,6 +1203,124 @@ export default function GenerationViewer() {
           </div>
         )}
       </div>
+      {saveModalOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4 py-6">
+          <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Save Test to Library
+                </h3>
+                <p className="text-sm text-gray-500">
+                  Add metadata so QA teammates can search, filter, and rerun it later.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!savingTest) {
+                    setSaveModalOpen(false);
+                  }
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium text-gray-700">Test Name</label>
+                <input
+                  type="text"
+                  value={saveForm.name}
+                  onChange={(e) => setSaveForm((prev) => ({ ...prev, name: e.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium text-gray-700">Folder / Suite</label>
+                  <input
+                    type="text"
+                    value={saveForm.folder}
+                    onChange={(e) =>
+                      setSaveForm((prev) => ({ ...prev, folder: e.target.value }))
+                    }
+                    placeholder="e.g., Authentication"
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-700">Tags</label>
+                  <input
+                    type="text"
+                    value={saveForm.tagsInput}
+                    onChange={(e) =>
+                      setSaveForm((prev) => ({ ...prev, tagsInput: e.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                    placeholder="ai-generated, smoke, login"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-gray-700">Description</label>
+                <textarea
+                  value={saveForm.description}
+                  onChange={(e) =>
+                    setSaveForm((prev) => ({ ...prev, description: e.target.value }))
+                  }
+                  rows={3}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                  placeholder="Optional summary for teammates"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-gray-700">Default Credential</label>
+                <select
+                  value={saveForm.credentialId}
+                  onChange={(e) =>
+                    setSaveForm((prev) => ({ ...prev, credentialId: e.target.value }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">No credential</option>
+                  {credentials.map((credential) => (
+                    <option key={credential.id} value={credential.id}>
+                      {credential.name} · {credential.username}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {saveModalError && (
+                <p className="text-sm text-red-600">{saveModalError}</p>
+              )}
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!savingTest) {
+                      setSaveModalOpen(false);
+                    }
+                  }}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  disabled={savingTest}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitSaveForm()}
+                  disabled={savingTest}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {savingTest ? 'Saving…' : 'Save Test'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {activeScreenshotIndex !== null &&
         activeScreenshotStep &&
         (activeScreenshotStep.screenshotData || activeScreenshotStep.screenshotPath) && (

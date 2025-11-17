@@ -22,6 +22,12 @@ export type ApiTestMetadata = {
   steps?: ApiTestStepMetadata[];
   createdAt: string;
   updatedAt?: string;
+  folder?: string | null;
+  lastRunAt?: string;
+  lastRunStatus?: RunResult['status'];
+  lastRunId?: string;
+  credentialId?: string;
+  startUrl?: string;
 };
 
 export type ApiTestStepMetadata = {
@@ -33,6 +39,17 @@ export type ApiTestStepMetadata = {
 export type ApiTest = {
   metadata: ApiTestMetadata;
   code: string;
+};
+
+export type ApiCredential = {
+  id: string;
+  name: string;
+  username: string;
+  password: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
 };
 
 export type RunControlAction = 'pause' | 'resume' | 'stop';
@@ -116,6 +133,11 @@ export const api = {
   finalizeTest: (id: string, metadata: { name?: string; description?: string; tags?: string[] }) =>
     fetchApi<{ success: boolean; test: ApiTestMetadata }>(`/tests/${id}/finalize`, {
       method: 'POST',
+      body: JSON.stringify(metadata)
+    }),
+  updateTestMetadata: (id: string, metadata: Partial<ApiTestMetadata>) =>
+    fetchApi<{ success: boolean; test: ApiTestMetadata }>(`/tests/${id}/metadata`, {
+      method: 'PATCH',
       body: JSON.stringify(metadata)
     }),
   runTest: (testId: string, options?: { headed?: boolean; speed?: number; keepBrowserOpen?: boolean }) =>
@@ -245,7 +267,13 @@ export const api = {
     }),
   saveGeneratedTest: (
     sessionId: string,
-    metadata: { name?: string; description?: string; tags?: string[] }
+    metadata: {
+      name?: string;
+      description?: string;
+      tags?: string[];
+      folder?: string;
+      credentialId?: string;
+    }
   ) =>
     fetchApi<{ success: boolean; test: ApiTestMetadata }>(`/generate/${sessionId}/save`, {
       method: 'POST',
@@ -271,5 +299,24 @@ export const api = {
     };
 
     return source;
-  }
+  },
+
+  listCredentials: () => fetchApi<{ credentials: ApiCredential[] }>('/credentials'),
+  createCredential: (credential: { name: string; username: string; password: string; notes?: string }) =>
+    fetchApi<{ credential: ApiCredential }>('/credentials', {
+      method: 'POST',
+      body: JSON.stringify(credential)
+    }),
+  updateCredential: (
+    id: string,
+    credential: { name: string; username: string; password?: string; notes?: string }
+  ) =>
+    fetchApi<{ credential: ApiCredential }>(`/credentials/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(credential)
+    }),
+  deleteCredential: (id: string) =>
+    fetchApi(`/credentials/${id}`, {
+      method: 'DELETE'
+    })
 };

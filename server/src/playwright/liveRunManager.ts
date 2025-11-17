@@ -16,6 +16,7 @@ import {
   RunExecutionContext
 } from './runner.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
+import { serializeCredentialsBlob } from '../storage/credentials.js';
 
 const EVENT_PREFIX = 'TW_EVENT:';
 
@@ -404,6 +405,7 @@ export async function startLiveRun(
   const context = await createRunExecutionContext(dataDir, testId, preferences);
   const npx = await resolveNpxInvocation();
   const baseEnv = npx.env ?? process.env;
+  const credentialsBlob = await serializeCredentialsBlob(dataDir);
 
   // Use relative path from dataDir since that's our cwd
   // Normalize to forward slashes for cross-platform compatibility
@@ -416,15 +418,18 @@ export async function startLiveRun(
     args.push('--headed');
   }
 
+  const env = {
+    ...baseEnv,
+    TRAILWRIGHT_RUN_ID: context.runId,
+    TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
+    TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
+    PLAYWRIGHT_JUNIT_OUTPUT_NAME: `trailwright-${context.runId}.xml`,
+    ...(credentialsBlob ? { TRAILWRIGHT_CREDENTIALS_BLOB: credentialsBlob } : {})
+  };
+
   const proc = spawn(npx.command, args, {
     cwd: context.dataDir,
-    env: {
-      ...baseEnv,
-      TRAILWRIGHT_RUN_ID: context.runId,
-      TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
-      TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
-      PLAYWRIGHT_JUNIT_OUTPUT_NAME: `trailwright-${context.runId}.xml`
-    }
+    env
   });
 
   const session = new LiveRunSession(context, proc);

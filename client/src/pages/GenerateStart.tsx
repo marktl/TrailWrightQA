@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import type { ApiCredential } from '../api/client';
 
 export default function GenerateStart() {
   const navigate = useNavigate();
@@ -11,6 +12,19 @@ export default function GenerateStart() {
   const [isStarting, setIsStarting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [keepBrowserOpen, setKeepBrowserOpen] = useState(false);
+  const [defaultStartUrl, setDefaultStartUrl] = useState('');
+  const [credentials, setCredentials] = useState<ApiCredential[]>([]);
+  const [selectedCredentialId, setSelectedCredentialId] = useState('');
+  const [loadingCredentials, setLoadingCredentials] = useState(true);
+  const [credentialForm, setCredentialForm] = useState({
+    name: '',
+    username: '',
+    password: '',
+    notes: ''
+  });
+  const [showCredentialForm, setShowCredentialForm] = useState(false);
+  const [savingCredential, setSavingCredential] = useState(false);
+  const [credentialError, setCredentialError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -19,15 +33,35 @@ export default function GenerateStart() {
       .getConfig()
       .then((config) => {
         if (!cancelled) {
-          setStartUrl(config?.defaultStartUrl || '');
+          const url = config?.defaultStartUrl || '';
+          setStartUrl(url);
+          setDefaultStartUrl(url);
         }
       })
       .catch(() => void 0);
+
+    void loadCredentials();
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  async function loadCredentials() {
+    try {
+      setLoadingCredentials(true);
+      const { credentials: list } = await api.listCredentials();
+      setCredentials(list);
+      if (list.length && !selectedCredentialId) {
+        setSelectedCredentialId(list[0]?.id ?? '');
+      }
+    } catch (err) {
+      console.error('Failed to load credentials', err);
+      setCredentialError('Unable to load credentials');
+    } finally {
+      setLoadingCredentials(false);
+    }
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -50,7 +84,8 @@ export default function GenerateStart() {
         goal: trimmedGoal,
         successCriteria: successCriteria.trim() || undefined,
         maxSteps: parsedSteps,
-        keepBrowserOpen
+        keepBrowserOpen,
+        credentialId: selectedCredentialId || undefined
       });
       navigate(`/generate/${sessionId}`);
     } catch (err) {
@@ -114,6 +149,108 @@ export default function GenerateStart() {
           </div>
 
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Credential (optional)</label>
+            {loadingCredentials ? (
+              <p className="text-sm text-gray-500">Loading credentials…</p>
+            ) : credentials.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                No credentials saved. Add one below or in Settings.
+              </p>
+            ) : (
+              <select
+                value={selectedCredentialId}
+                onChange={(e) => setSelectedCredentialId(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">No credential</option>
+                {credentials.map((cred) => (
+                  <option key={cred.id} value={cred.id}>
+                    {cred.name} · {cred.username}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="mt-2 flex flex-wrap gap-4 text-xs text-blue-600">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCredentialForm((prev) => !prev);
+                  setCredentialError(null);
+                }}
+                className="font-medium hover:underline"
+              >
+                {showCredentialForm ? 'Cancel new credential' : '+ Add new credential'}
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('/settings')}
+                className="font-medium hover:underline"
+              >
+                Manage in Settings →
+              </button>
+            </div>
+            {showCredentialForm && (
+              <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Display Name</label>
+                  <input
+                    type="text"
+                    value={credentialForm.name}
+                    onChange={(e) =>
+                      setCredentialForm((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Username / Email</label>
+                  <input
+                    type="text"
+                    value={credentialForm.username}
+                    onChange={(e) =>
+                      setCredentialForm((prev) => ({ ...prev, username: e.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Password</label>
+                  <input
+                    type="password"
+                    value={credentialForm.password}
+                    onChange={(e) =>
+                      setCredentialForm((prev) => ({ ...prev, password: e.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Notes (optional)</label>
+                  <textarea
+                    value={credentialForm.notes}
+                    onChange={(e) =>
+                      setCredentialForm((prev) => ({ ...prev, notes: e.target.value }))
+                    }
+                    rows={2}
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                {credentialError && (
+                  <p className="text-xs text-red-600">{credentialError}</p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleCreateCredential()}
+                  disabled={savingCredential}
+                  className="w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {savingCredential ? 'Saving…' : 'Save Credential'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Max Steps</label>
             <input
               type="number"
@@ -174,3 +311,29 @@ export default function GenerateStart() {
     </div>
   );
 }
+  async function handleCreateCredential() {
+    if (!credentialForm.name.trim() || !credentialForm.username.trim() || !credentialForm.password.trim()) {
+      setCredentialError('Provide a name, username, and password for the new credential.');
+      return;
+    }
+
+    setSavingCredential(true);
+    setCredentialError(null);
+    try {
+      const response = await api.createCredential({
+        name: credentialForm.name.trim(),
+        username: credentialForm.username.trim(),
+        password: credentialForm.password.trim(),
+        notes: credentialForm.notes.trim() || undefined
+      });
+      setCredentialForm({ name: '', username: '', password: '', notes: '' });
+      setShowCredentialForm(false);
+      await loadCredentials();
+      setSelectedCredentialId(response.credential.id);
+    } catch (err) {
+      const text = err instanceof Error ? err.message : 'Failed to create credential';
+      setCredentialError(text);
+    } finally {
+      setSavingCredential(false);
+    }
+  }

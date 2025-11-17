@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
 import { generateTest } from '../ai/index.js';
-import { saveTest, loadTest, listTests, deleteTest } from '../storage/tests.js';
+import { saveTest, loadTest, listTests, deleteTest, updateTestMetadata } from '../storage/tests.js';
 import { loadConfig } from '../storage/config.js';
 import { CONFIG } from '../config.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
@@ -373,6 +373,50 @@ router.post('/:id/finalize', async (req, res) => {
   } catch (err: any) {
     console.error('Finalize error:', err);
     res.status(500).json({ error: err.message || 'Failed to finalize test' });
+  }
+});
+
+router.patch('/:id/metadata', async (req, res) => {
+  try {
+    const testId = req.params.id;
+    const payload = req.body ?? {};
+
+    const tags = Array.isArray(payload.tags)
+      ? payload.tags
+          .map((tag: unknown) => (typeof tag === 'string' ? tag.trim() : ''))
+          .filter(Boolean)
+      : undefined;
+
+    const updates = {
+      name: typeof payload.name === 'string' ? payload.name.trim() : undefined,
+      description:
+        typeof payload.description === 'string' ? payload.description.trim() : undefined,
+      tags,
+      prompt: typeof payload.prompt === 'string' ? payload.prompt.trim() : undefined,
+      successCriteria:
+        typeof payload.successCriteria === 'string' ? payload.successCriteria.trim() : undefined,
+      folder:
+        payload.folder === null
+          ? null
+          : typeof payload.folder === 'string'
+            ? payload.folder.trim()
+            : undefined,
+      credentialId:
+        typeof payload.credentialId === 'string' ? payload.credentialId.trim() : undefined
+    };
+
+    const filteredUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([, value]) => value !== undefined)
+    );
+
+    if (Object.keys(filteredUpdates).length === 0) {
+      return res.status(400).json({ error: 'No valid metadata fields provided' });
+    }
+
+    const updated = await updateTestMetadata(CONFIG.DATA_DIR, testId, filteredUpdates);
+    res.json({ success: true, test: updated.metadata });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Failed to update test metadata' });
   }
 });
 

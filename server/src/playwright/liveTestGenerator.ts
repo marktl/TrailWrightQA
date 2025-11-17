@@ -12,7 +12,7 @@ import type {
   CaptureMode,
   ChatMessage
 } from '../../../shared/types.js';
-import type { TestMetadata } from '../types.js';
+import type { TestMetadata, CredentialRecord } from '../types.js';
 import { capturePageState, formatPageStateForAI, resetHashTracking } from './pageStateCapture.js';
 import { executeAction, createRecordedStep } from './actionExecutor.js';
 import { AGENT_SYSTEM_PROMPT, buildAgentPrompt, generateTestName } from '../ai/agentPrompts.js';
@@ -52,6 +52,7 @@ export class LiveTestGenerator extends EventEmitter {
   private sessionDir: string;
   private screenshotDir: string;
   private persistedTest?: TestMetadata;
+  private credential?: CredentialRecord;
 
   private options: NormalizedGenerationOptions;
   private provider: AIProvider;
@@ -66,7 +67,8 @@ export class LiveTestGenerator extends EventEmitter {
     options: LiveGenerationOptions,
     provider: AIProvider,
     apiKey: string,
-    baseUrl?: string
+    baseUrl?: string,
+    credential?: CredentialRecord
   ) {
     super();
     this.sessionId = `gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -89,6 +91,7 @@ export class LiveTestGenerator extends EventEmitter {
     this.provider = provider;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
+    this.credential = credential;
 
     this.setMaxListeners(100);
   }
@@ -114,7 +117,16 @@ export class LiveTestGenerator extends EventEmitter {
       chat: [...this.chat],
       error: this.error,
       savedTestId: this.persistedTest?.id,
-      keepBrowserOpen: this.options.keepBrowserOpen
+      keepBrowserOpen: this.options.keepBrowserOpen,
+      credentialId: this.credential?.id,
+      credentialSummary: this.credential
+        ? {
+            id: this.credential.id,
+            name: this.credential.name,
+            username: this.credential.username,
+            notes: this.credential.notes
+          }
+        : undefined
     };
   }
 
@@ -313,6 +325,14 @@ export class LiveTestGenerator extends EventEmitter {
         .map((correction, index) => `${index + 1}. ${correction}`)
         .join('\n');
       prompt += `\n\nUSER CORRECTIONS (follow carefully):\n${corrections}`;
+    }
+
+    if (this.credential) {
+      prompt += `\n\nCREDENTIALS AVAILABLE:\n- Name: ${this.credential.name}\n- Username: ${
+        this.credential.username
+      }\n- Password: ${this.credential.password}\n${
+        this.credential.notes ? `- Notes: ${this.credential.notes}` : ''
+      }\nUse these when authentication is required.`;
     }
 
     if (this.recordedSteps.length > 0) {

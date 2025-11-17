@@ -71,3 +71,18 @@ export async function deleteTest(dataDir: string, testId: string): Promise<void>
   const filePath = path.join(testsDir, `${testId}.spec.ts`);
   await fs.unlink(filePath);
 }
+
+export async function updateTestMetadata(
+  dataDir: string,
+  testId: string,
+  updates: Partial<TestMetadata>
+): Promise<Test> {
+  const test = await loadTest(dataDir, testId);
+  test.metadata = {
+    ...test.metadata,
+    ...updates,
+    updatedAt: new Date().toISOString()
+  };
+  await saveTest(dataDir, test);
+  return test;
+}

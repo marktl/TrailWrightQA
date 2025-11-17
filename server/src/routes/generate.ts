@@ -11,6 +11,7 @@ import type {
 import { LiveTestGenerator } from '../playwright/liveTestGenerator.js';
 import { loadConfig } from '../storage/config.js';
 import { saveTest } from '../storage/tests.js';
+import { getCredentialById } from '../storage/credentials.js';
 import { CONFIG } from '../config.js';
 
 const router = express.Router();
@@ -29,6 +30,8 @@ type PersistOptions = {
   tags?: string[];
   prompt?: string;
   successCriteria?: string;
+  folder?: string;
+  credentialId?: string;
 };
 
 function formatAutoTestName(goal: string): string {
@@ -65,6 +68,9 @@ async function persistGeneratorTest(
     prompt: options.prompt?.trim() || state.goal,
     successCriteria:
       options.successCriteria?.trim() || existing?.successCriteria || state.successCriteria,
+    folder: options.folder ?? existing?.folder,
+    credentialId: options.credentialId ?? state.credentialId,
+    startUrl: state.startUrl,
     steps: state.recordedSteps.map((step) => ({
       number: step.stepNumber,
       qaSummary: step.qaSummary,
@@ -118,6 +124,10 @@ router.post('/start', async (req, res) => {
     if (!options.startUrl || !options.goal) {
       return res.status(400).json({ error: 'startUrl and goal are required' });
     }
+    const trimmedCredentialId =
+      typeof options.credentialId === 'string' && options.credentialId.trim()
+        ? options.credentialId.trim()
+        : undefined;
 
     // Load config for AI provider
     const config = await loadConfig(CONFIG.DATA_DIR);
@@ -128,7 +138,22 @@ router.post('/start', async (req, res) => {
     }
 
     // Create new generation session
-    const generator = new LiveTestGenerator(options, config.apiProvider, apiKey, config.baseUrl);
+    let credentialRecord = undefined;
+    if (trimmedCredentialId) {
+      credentialRecord = await getCredentialById(CONFIG.DATA_DIR, trimmedCredentialId);
+      if (!credentialRecord) {
+        return res.status(404).json({ error: 'Credential not found' });
+      }
+      options.credentialId = credentialRecord.id;
+    }
+
+    const generator = new LiveTestGenerator(
+      options,
+      config.apiProvider,
+      apiKey,
+      config.baseUrl,
+      credentialRecord
+    );
     sessions.set(generator.id, generator);
 
     // Setup event forwarding to SSE clients
@@ -451,7 +476,7 @@ router.post('/:sessionId/suggest-name', async (req, res) => {
  */
 router.post('/:sessionId/save', async (req, res) => {
   const { sessionId } = req.params;
-  const { name, description, tags, prompt, successCriteria } = req.body || {};
+  const { name, description, tags, prompt, successCriteria, folder, credentialId } = req.body || {};
 
   const generator = sessions.get(sessionId);
 
@@ -471,7 +496,9 @@ router.post('/:sessionId/save', async (req, res) => {
       description,
       tags,
       prompt,
-      successCriteria
+      successCriteria,
+      folder,
+      credentialId
     });
 
     broadcastSessionEvent(sessionId, {

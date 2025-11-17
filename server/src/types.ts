@@ -4,9 +4,16 @@ export interface TestMetadata {
   description?: string;
   tags?: string[];
   prompt?: string;
+  successCriteria?: string;
   steps?: TestStepMetadata[];
   createdAt: string;
   updatedAt?: string;
+  folder?: string | null;
+  lastRunAt?: string;
+  lastRunStatus?: RunResult['status'];
+  lastRunId?: string;
+  credentialId?: string;
+  startUrl?: string;
 }
 
 export interface Test {
@@ -29,8 +36,18 @@ export interface RunResult {
   endedAt: string;
   tracePath?: string;
   screenshotPaths?: string[];
+  screenshots?: RunScreenshot[];
   videoPath?: string;
   error?: string;
+}
+
+export interface RunScreenshot {
+  path: string;
+  stepTitle?: string;
+  testTitle?: string;
+  description?: string;
+  capturedAt?: string;
+  attachmentName?: string;
 }
 
 export type RunStatus = 'queued' | 'running' | 'paused' | 'stopped' | 'completed' | 'failed';
@@ -63,6 +80,7 @@ export interface ChatMessage {
 export interface RunOptionSettings {
   headed: boolean;
   speed: number;
+  keepOpen?: boolean;
 }
 
 export interface LiveRunState {
@@ -76,4 +94,15 @@ export interface LiveRunState {
   chat: ChatMessage[];
   result?: RunResult;
   options?: RunOptionSettings;
+}
+
+export interface CredentialRecord {
+  id: string;
+  name: string;
+  username: string;
+  password: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
 }
