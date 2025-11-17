@@ -123,6 +123,7 @@ export interface RecordedStep {
   playwrightCode: string;
   qaSummary: string;
   timestamp: string;
+  url?: string;
   screenshotPath?: string;
   screenshotData?: string;
 }

@@ -312,7 +312,7 @@ function escapeString(str: string): string {
 export function createRecordedStep(
   stepNumber: number,
   action: AIAction,
-  extras: Partial<Pick<RecordedStep, 'screenshotPath' | 'screenshotData'>> = {}
+  extras: Partial<Pick<RecordedStep, 'url' | 'screenshotPath' | 'screenshotData'>> = {}
 ): RecordedStep {
   return {
     stepNumber,

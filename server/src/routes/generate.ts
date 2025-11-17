@@ -155,6 +155,7 @@ router.post('/start', async (req, res) => {
       credentialRecord
     );
     sessions.set(generator.id, generator);
+    console.log(`[generate] Created session ${generator.id}. Total active sessions: ${sessions.size}`);
 
     // Setup event forwarding to SSE clients
     generator.on('event', (event: LiveGenerationEvent) => {
@@ -284,7 +285,11 @@ router.post('/:sessionId/restart', async (req, res) => {
   const generator = sessions.get(sessionId);
 
   if (!generator) {
-    return res.status(404).json({ error: 'Session not found' });
+    console.log(`[generate] Restart failed: Session ${sessionId} not found. Active sessions: ${Array.from(sessions.keys()).join(', ')}`);
+    return res.status(404).json({
+      error: 'Session not found - it may have been lost due to server restart. Please start a new session.',
+      sessionId
+    });
   }
 
   try {
@@ -292,6 +297,7 @@ router.post('/:sessionId/restart', async (req, res) => {
     persistedSessions.delete(sessionId);
     res.json({ success: true, state: generator.getState() });
   } catch (error: any) {
+    console.error(`[generate] Restart error for session ${sessionId}:`, error);
     res.status(500).json({ error: error.message || 'Failed to restart generation' });
   }
 });

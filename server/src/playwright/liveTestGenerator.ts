@@ -187,69 +187,91 @@ export class LiveTestGenerator extends EventEmitter {
         }
 
         const step = this.nextStepNumber;
+        const maxRetries = 2;
+        let retryCount = 0;
+        let lastError: string | undefined;
+        let actionSucceeded = false;
 
-        // Capture page state
-        const pageState = await capturePageState(this.page);
-        this.currentUrl = pageState.url;
+        while (retryCount <= maxRetries && !actionSucceeded) {
+          // Capture page state
+          const pageState = await capturePageState(this.page);
+          this.currentUrl = pageState.url;
 
-        this.emit('event', {
-          type: 'page_changed',
-          timestamp: new Date().toISOString(),
-          payload: { url: pageState.url, title: pageState.title }
-        });
+          this.emit('event', {
+            type: 'page_changed',
+            timestamp: new Date().toISOString(),
+            payload: { url: pageState.url, title: pageState.title }
+          });
 
-        // Ask AI for next action
-        this.updateStatus('thinking');
-        const action = await this.decideNextAction(
-          pageState.hasChanged ? formatPageStateForAI(pageState) : '(page unchanged)'
-        );
+          // Ask AI for next action
+          this.updateStatus('thinking');
+          const action = await this.decideNextAction(
+            pageState.hasChanged ? formatPageStateForAI(pageState) : '(page unchanged)',
+            lastError
+          );
 
-        if (this.isPaused) {
-          return;
-        }
-
-        // Check if done
-        if (action.action === 'done') {
-          if (this.userCorrections.length > 0) {
-            this.userCorrections = [];
-            this.log('User guidance completed. Ready for new goals.');
+          if (this.isPaused) {
+            return;
           }
-          this.log(`✓ Goal achieved`);
-          this.updateStatus('completed');
-          await this.finalize();
-          return;
+
+          // Check if done
+          if (action.action === 'done') {
+            if (this.userCorrections.length > 0) {
+              this.userCorrections = [];
+            }
+            this.log(`✓ Goal achieved: ${action.reasoning}`);
+            this.updateStatus('completed');
+            await this.finalize();
+            return;
+          }
+
+          // Execute action
+          this.updateStatus('running');
+
+          const result = await executeAction(this.page, action);
+
+          if (!result.success) {
+            lastError = result.error;
+            retryCount++;
+
+            if (retryCount <= maxRetries) {
+              this.log(`⚠️ Action failed (attempt ${retryCount}/${maxRetries + 1}): ${result.error}`);
+              this.log(`Asking AI to try a different approach...`);
+              // Loop continues with lastError passed to AI
+              continue;
+            } else {
+              // All retries exhausted - pause and ask user for help
+              await this.handleRetriesExhausted(action, result.error);
+              return;
+            }
+          }
+
+          // Action succeeded
+          actionSucceeded = true;
+
+          // Allow page to settle before capturing screenshot
+          await this.page.waitForTimeout(500);
+          const screenshot = await this.captureStepScreenshot(step);
+
+          // Record step
+          const recorded = createRecordedStep(step, action, {
+            url: this.currentUrl,
+            screenshotPath: screenshot?.path,
+            screenshotData: screenshot?.data
+          });
+          this.recordedSteps.push(recorded);
+          this.nextStepNumber = this.recordedSteps.length + 1;
+          this.consumeUserCorrection();
+
+          this.emit('event', {
+            type: 'step_recorded',
+            timestamp: new Date().toISOString(),
+            payload: recorded
+          });
+
+          this.log(`${step}. ${recorded.qaSummary}`);
+          this.touch();
         }
-
-        // Execute action
-        this.updateStatus('running');
-
-        const result = await executeAction(this.page, action);
-
-        if (!result.success) {
-          throw new Error(`Action failed: ${result.error}`);
-        }
-
-        // Allow page to settle before capturing screenshot
-        await this.page.waitForTimeout(500);
-        const screenshot = await this.captureStepScreenshot(step);
-
-        // Record step
-        const recorded = createRecordedStep(step, action, {
-          screenshotPath: screenshot?.path,
-          screenshotData: screenshot?.data
-        });
-        this.recordedSteps.push(recorded);
-        this.nextStepNumber = this.recordedSteps.length + 1;
-        this.consumeUserCorrection();
-
-        this.emit('event', {
-          type: 'step_recorded',
-          timestamp: new Date().toISOString(),
-          payload: recorded
-        });
-
-        this.log(`${step}. ${recorded.qaSummary}`);
-        this.touch();
       }
 
       // Max steps reached
@@ -270,8 +292,8 @@ export class LiveTestGenerator extends EventEmitter {
   /**
    * Call AI to decide next action
    */
-  private async decideNextAction(pageState: string): Promise<AIAction> {
-    const prompt = this.buildContextualPrompt(pageState);
+  private async decideNextAction(pageState: string, previousError?: string): Promise<AIAction> {
+    const prompt = this.buildContextualPrompt(pageState, previousError);
 
     this.emit('event', {
       type: 'ai_thinking',
@@ -311,7 +333,7 @@ export class LiveTestGenerator extends EventEmitter {
     }
   }
 
-  private buildContextualPrompt(pageState: string): string {
+  private buildContextualPrompt(pageState: string, previousError?: string): string {
     let prompt = buildAgentPrompt(
       this.options.goal,
       this.currentUrl,
@@ -319,13 +341,6 @@ export class LiveTestGenerator extends EventEmitter {
       this.recordedSteps,
       this.options.successCriteria
     );
-
-    if (this.userCorrections.length > 0) {
-      const corrections = this.userCorrections
-        .map((correction, index) => `${index + 1}. ${correction}`)
-        .join('\n');
-      prompt += `\n\nUSER CORRECTIONS (follow carefully):\n${corrections}`;
-    }
 
     if (this.credential) {
       prompt += `\n\nCREDENTIALS AVAILABLE:\n- Name: ${this.credential.name}\n- Username: ${
@@ -341,6 +356,17 @@ export class LiveTestGenerator extends EventEmitter {
         .map((step) => `- Step ${step.stepNumber}: ${step.qaSummary}`)
         .join('\n');
       prompt += `\n\nRECENT STEPS COMPLETED:\n${recentSteps}`;
+    }
+
+    if (previousError) {
+      prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}\n\nThe selector or approach you just tried didn't work. Analyze the error carefully and try a DIFFERENT approach:\n- If "strict mode violation", the selector matched multiple elements - use more specific selectors with exact: true\n- If "timeout", the element may not exist or have a different accessible name\n- Review the error details and adjust your selector accordingly\n- DO NOT repeat the same selector that just failed`;
+    }
+
+    if (this.userCorrections.length > 0) {
+      const corrections = this.userCorrections
+        .map((correction, index) => `${index + 1}. ${correction}`)
+        .join('\n');
+      prompt += `\n\n⚠️ IMMEDIATE USER CORRECTIONS (handle next, then return to original goal):\n${corrections}\n\nIMPORTANT: After addressing the correction above, CONTINUE pursuing the original goal: "${this.options.goal}"`;
     }
 
     return prompt;
@@ -773,7 +799,7 @@ ${stepCode}
     this.userCorrections.shift();
 
     if (!this.userCorrections.length) {
-      this.log('User guidance applied. Continuing autonomous exploration.');
+      this.log(`✓ User feedback addressed. Resuming original goal: "${this.options.goal}"`);
     }
   }
 
@@ -822,6 +848,86 @@ ${stepCode}
     this.log('⚠️ Timed out while deciding the next action. Waiting for your guidance.');
     this.addChatMessage('assistant', friendlyMessage);
     this.updateStatus('paused');
+  }
+
+  private async handleRetriesExhausted(failedAction: AIAction, error: string): Promise<void> {
+    this.log(`❌ Action failed after 3 attempts: ${error}`);
+    this.log(`Browser left open for inspection.`);
+
+    // Generate AI summary of what was tried
+    const summary = await this.generateErrorSummary(failedAction, error);
+
+    this.isPaused = true;
+    this.isRunning = false;
+    this.updateStatus('paused');
+
+    // Add AI message with summary and request for help
+    const helpMessage = `I tried multiple approaches but couldn't complete this action:\n\n${summary}\n\nPlease review the browser window and provide guidance on how to proceed, or use the restart button to try a different approach.`;
+    this.addChatMessage('assistant', helpMessage);
+  }
+
+  private async generateErrorSummary(action: AIAction, error: string): Promise<string> {
+    const recentSteps = this.recordedSteps
+      .slice(-3)
+      .map((step) => `- ${step.qaSummary}`)
+      .join('\n');
+
+    const prompt = `You encountered an error while automating a web page. Provide a brief, helpful summary for the user.
+
+Goal: ${this.options.goal}
+Recent steps completed:
+${recentSteps || 'None yet'}
+
+Last attempted action: ${action.action} ${action.selector || ''} ${action.value || ''}
+Error: ${error}
+
+Provide a 2-3 sentence summary explaining:
+1. What you were trying to do
+2. Why it failed (in simple terms)
+3. What might help (e.g., "The field label might be different" or "The element might not be visible yet")
+
+Keep it non-technical and actionable. Do not use markdown.`;
+
+    try {
+      let summary = '';
+      switch (this.provider) {
+        case 'anthropic': {
+          const client = new Anthropic({ apiKey: this.apiKey });
+          const message = await client.messages.create({
+            model: 'claude-3-5-sonnet-20241022',
+            max_tokens: 200,
+            messages: [{ role: 'user', content: prompt }]
+          });
+          const content = message.content[0];
+          if (content.type === 'text') {
+            summary = content.text;
+          }
+          break;
+        }
+        case 'openai': {
+          const client = new OpenAI({ apiKey: this.apiKey });
+          const completion = await client.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 200
+          });
+          summary = completion.choices[0]?.message?.content || '';
+          break;
+        }
+        case 'gemini': {
+          const genAI = new GoogleGenAI({ apiKey: this.apiKey });
+          const result = await genAI.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt
+          });
+          summary = result.text || '';
+          break;
+        }
+      }
+      return summary.trim() || `I attempted to ${action.reasoning || action.action} but encountered: ${error}`;
+    } catch {
+      return `I attempted to ${action.reasoning || action.action} but encountered: ${error}`;
+    }
   }
 
   private handleError(error: any): void {

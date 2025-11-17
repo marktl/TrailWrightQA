@@ -1133,6 +1133,11 @@ export default function GenerationViewer() {
                     </div>
                   </div>
                   <p className="text-sm text-gray-700 mb-2">{step.qaSummary}</p>
+                  {step.url && (
+                    <div className="mt-2 mb-1 text-xs text-gray-500 truncate" title={step.url}>
+                      <span className="font-medium">URL:</span> {step.url}
+                    </div>
+                  )}
                   {(step.screenshotData || step.screenshotPath) && (
                     <div className="mt-3">
                       <button
@@ -1352,6 +1357,11 @@ export default function GenerationViewer() {
                 <p className="mt-1 text-lg font-semibold text-white">
                   {activeScreenshotStep.qaSummary}
                 </p>
+                {activeScreenshotStep.url && (
+                  <p className="mt-2 text-sm text-gray-300 break-all">
+                    <span className="font-medium text-gray-400">URL:</span> {activeScreenshotStep.url}
+                  </p>
+                )}
               </div>
               <div className="relative overflow-hidden rounded-lg bg-black">
                 <img
