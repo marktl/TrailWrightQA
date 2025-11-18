@@ -137,6 +137,8 @@ export interface RecordedStep {
 
 export type CaptureMode = 'accessibility' | 'screenshot' | 'hybrid';
 
+export type GenerationMode = 'auto' | 'manual';
+
 export interface LiveGenerationOptions {
   startUrl: string;
   goal: string;
@@ -146,12 +148,14 @@ export interface LiveGenerationOptions {
   keepBrowserOpen?: boolean;
   credentialId?: string;
   viewportSize?: ViewportSize;
+  mode?: GenerationMode;
 }
 
 export type GenerationStatus =
   | 'initializing'
   | 'running'
   | 'thinking'
+  | 'awaiting_input'
   | 'paused'
   | 'completed'
   | 'failed'
@@ -181,6 +185,7 @@ export interface LiveGenerationState {
     username: string;
     notes?: string;
   };
+  mode: GenerationMode;
 }
 
 export type LiveGenerationEventType =

@@ -11,7 +11,8 @@ import type {
   AIAction,
   CaptureMode,
   ChatMessage,
-  ViewportSize
+  ViewportSize,
+  GenerationMode
 } from '../../../shared/types.js';
 import type { TestMetadata, CredentialRecord } from '../types.js';
 import { capturePageState, formatPageStateForAI, resetHashTracking } from './pageStateCapture.js';
@@ -33,6 +34,7 @@ type NormalizedGenerationOptions = {
   successCriteria?: string;
   keepBrowserOpen: boolean;
   viewportSize?: ViewportSize;
+  mode: GenerationMode;
 };
 
 export class LiveTestGenerator extends EventEmitter {
@@ -55,6 +57,7 @@ export class LiveTestGenerator extends EventEmitter {
   private screenshotDir: string;
   private persistedTest?: TestMetadata;
   private credential?: CredentialRecord;
+  private mode: GenerationMode;
 
   private options: NormalizedGenerationOptions;
   private provider: AIProvider;
@@ -66,6 +69,8 @@ export class LiveTestGenerator extends EventEmitter {
   private userCorrections: string[] = [];
   private beforeManualInterventionState?: any;
   private pendingManualAction?: { action: AIAction; playwrightCode: string; qaSummary: string };
+  private activeManualInstruction?: string;
+  private manualInterruptRequested = false;
 
   constructor(
     options: LiveGenerationOptions,
@@ -83,6 +88,7 @@ export class LiveTestGenerator extends EventEmitter {
     this.screenshotDir = path.join(this.sessionDir, 'screenshots');
 
     // Set defaults
+    this.mode = options.mode === 'manual' ? 'manual' : 'auto';
     this.options = {
       startUrl: options.startUrl,
       goal: options.goal,
@@ -90,7 +96,8 @@ export class LiveTestGenerator extends EventEmitter {
       captureMode: options.captureMode || 'accessibility',
       successCriteria: options.successCriteria?.trim() || undefined,
       keepBrowserOpen: Boolean(options.keepBrowserOpen),
-      viewportSize: options.viewportSize
+      viewportSize: options.viewportSize,
+      mode: this.mode
     };
 
     this.provider = provider;
@@ -103,6 +110,10 @@ export class LiveTestGenerator extends EventEmitter {
 
   get id(): string {
     return this.sessionId;
+  }
+
+  isManualMode(): boolean {
+    return this.mode === 'manual';
   }
 
   getState(): LiveGenerationState {
@@ -131,7 +142,8 @@ export class LiveTestGenerator extends EventEmitter {
             username: this.credential.username,
             notes: this.credential.notes
           }
-        : undefined
+        : undefined,
+      mode: this.mode
     };
   }
 
@@ -167,6 +179,16 @@ export class LiveTestGenerator extends EventEmitter {
       await this.page.goto(this.options.startUrl, { waitUntil: 'domcontentloaded' });
       this.currentUrl = this.page.url();
 
+      if (this.isManualMode()) {
+        this.log('Step-by-step builder ready. Describe what should happen next and I will execute each action until it is complete.');
+        this.addChatMessage(
+          'assistant',
+          'Step-by-step mode engaged. Describe the next browser behavior (e.g., "Fill out the entire registration form with..."). I will keep going until it is complete. Use the Interrupt button if you need me to pause.'
+        );
+        this.enterManualAwaitingState();
+        return;
+      }
+
       this.updateStatus('running');
 
       // Run the agent loop
@@ -179,20 +201,34 @@ export class LiveTestGenerator extends EventEmitter {
   /**
    * Main agent loop - iteratively decide and execute actions
    */
-  private async runAgentLoop(): Promise<void> {
+  private async runAgentLoop(options?: { singleStep?: boolean; manualInstruction?: string }): Promise<void> {
     if (!this.page) {
       throw new Error('Page not initialized');
     }
 
     if (this.isRunning) {
+      if (options?.manualInstruction) {
+        throw new Error('Already executing an action');
+      }
       return;
     }
 
     this.isRunning = true;
+    const manualInstruction = options?.manualInstruction?.trim();
+    const enforceSingleStep = Boolean(options?.singleStep && !manualInstruction);
 
     try {
       while (this.nextStepNumber <= this.options.maxSteps) {
-        if (this.isPaused) {
+        if (manualInstruction && this.manualInterruptRequested) {
+          const interrupted = this.clearManualInstruction() || manualInstruction;
+          this.log(`⏹️ Step-by-step instruction interrupted: "${interrupted}"`);
+          this.addChatMessage('assistant', 'Interrupt acknowledged. Describe the next action when you are ready.');
+          this.enterManualAwaitingState();
+          this.touch();
+          return;
+        }
+
+        if (this.isPaused && !manualInstruction) {
           return;
         }
 
@@ -226,13 +262,27 @@ export class LiveTestGenerator extends EventEmitter {
 
           // Check if done
           if (action.action === 'done') {
-            if (this.userCorrections.length > 0) {
-              this.userCorrections = [];
+            if (manualInstruction) {
+              const finishedInstruction = this.clearManualInstruction() || manualInstruction;
+              const reasoning =
+                action.reasoning?.trim() ||
+                `I believe "${manualInstruction}" is already complete.`;
+              this.log(`✓ Finished step-by-step instruction: "${finishedInstruction}"`);
+              this.addChatMessage(
+                'assistant',
+                `${reasoning}\n\nDescribe the next browser action when you're ready.`
+              );
+              this.enterManualAwaitingState();
+              return;
+            } else {
+              if (this.userCorrections.length > 0) {
+                this.userCorrections = [];
+              }
+              this.log(`✓ Goal achieved: ${action.reasoning}`);
+              this.updateStatus('completed');
+              await this.finalize();
+              return;
             }
-            this.log(`✓ Goal achieved: ${action.reasoning}`);
-            this.updateStatus('completed');
-            await this.finalize();
-            return;
           }
 
           // Execute action
@@ -252,6 +302,14 @@ export class LiveTestGenerator extends EventEmitter {
               this.log(`Asking AI to try a different approach...`);
               // Loop continues with lastError and screenshot passed to AI
               continue;
+            } else if (manualInstruction) {
+              await this.handleManualInstructionFailure(
+                manualInstruction,
+                action,
+                result.error,
+                failureScreenshot
+              );
+              return;
             } else {
               // All retries exhausted - pause and ask user for help
               await this.handleRetriesExhausted(action, result.error, failureScreenshot);
@@ -283,6 +341,17 @@ export class LiveTestGenerator extends EventEmitter {
           });
 
           this.log(`${step}. ${recorded.qaSummary}`);
+
+          if (manualInstruction) {
+            this.addChatMessage('assistant', `Step recorded: ${recorded.qaSummary}`);
+          }
+
+          if (enforceSingleStep) {
+            this.enterManualAwaitingState();
+            this.touch();
+            return;
+          }
+
           this.touch();
         }
       }
@@ -293,10 +362,16 @@ export class LiveTestGenerator extends EventEmitter {
       this.error = 'Maximum steps reached without completing goal';
       await this.finalize();
     } catch (error: any) {
-      this.handleError(error);
+      if (manualInstruction) {
+              await this.handleManualUnexpectedError(manualInstruction, error);
+      } else {
+        this.handleError(error);
+      }
     } finally {
       this.isRunning = false;
-      if (this.status !== 'paused') {
+      if (this.status === 'awaiting_input') {
+        this.isPaused = true;
+      } else if (this.status !== 'paused') {
         this.isPaused = false;
       }
     }
@@ -347,8 +422,13 @@ export class LiveTestGenerator extends EventEmitter {
   }
 
   private buildContextualPrompt(pageState: string, previousError?: string): string {
+    const manualInstruction = this.activeManualInstruction?.trim();
+    const effectiveGoal = manualInstruction
+      ? `Step-by-step instruction: ${manualInstruction}\n\nOriginal session goal: ${this.options.goal}`
+      : this.options.goal;
+
     let prompt = buildAgentPrompt(
-      this.options.goal,
+      effectiveGoal,
       this.currentUrl,
       pageState,
       this.recordedSteps,
@@ -369,6 +449,16 @@ export class LiveTestGenerator extends EventEmitter {
         .map((step) => `- Step ${step.stepNumber}: ${step.qaSummary}`)
         .join('\n');
       prompt += `\n\nRECENT STEPS COMPLETED:\n${recentSteps}`;
+    }
+
+    if (manualInstruction) {
+      prompt += `\n\nSTEP-BY-STEP COLLABORATION CONTEXT:\n- Follow this instruction precisely: ${manualInstruction}\n- Continue taking actions until this instruction is fully satisfied (it may require multiple steps)\n- When you believe the instruction is complete, respond with {"action":"done"} and briefly explain what was achieved\n- Do not pursue other goals until the user provides another instruction`;
+
+      if (previousError) {
+        prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}\nReview the error and adjust your next attempt while still pursuing the user's step-by-step instruction.`;
+      }
+
+      return prompt;
     }
 
     // User corrections take priority over error context
@@ -445,6 +535,7 @@ export class LiveTestGenerator extends EventEmitter {
    * Finalize and cleanup
    */
   private async finalize(): Promise<void> {
+    this.clearManualInstruction();
     this.emit('event', {
       type: 'completed',
       timestamp: new Date().toISOString(),
@@ -509,6 +600,10 @@ export class LiveTestGenerator extends EventEmitter {
   }
 
   pause(): void {
+    if (this.isManualMode()) {
+      this.log('Pause requested but step-by-step sessions already wait between actions.');
+      return;
+    }
     if (this.status !== 'running' && this.status !== 'thinking') {
       return;
     }
@@ -518,6 +613,10 @@ export class LiveTestGenerator extends EventEmitter {
   }
 
   resume(userCorrection?: string): void {
+    if (this.isManualMode()) {
+      this.log('Resume requested but step-by-step sessions run only when you send a new instruction.');
+      return;
+    }
     if (this.status !== 'paused') {
       return;
     }
@@ -535,6 +634,51 @@ export class LiveTestGenerator extends EventEmitter {
     this.isPaused = false;
     this.updateStatus('running');
     void this.runAgentLoop();
+  }
+
+  async executeManualInstruction(instruction: string): Promise<void> {
+    if (!this.isManualMode()) {
+      throw new Error('This session is not in manual mode.');
+    }
+
+    const trimmed = instruction.trim();
+    if (!trimmed) {
+      throw new Error('Instruction cannot be empty');
+    }
+
+    if (!this.page) {
+      throw new Error('Browser not initialized');
+    }
+
+    if (this.isRunning) {
+      throw new Error('Already executing an action');
+    }
+
+    this.addChatMessage('user', trimmed);
+    this.userCorrections = [];
+    this.activeManualInstruction = trimmed;
+    this.manualInterruptRequested = false;
+    this.isPaused = false;
+    await this.runAgentLoop({ manualInstruction: trimmed });
+  }
+
+  requestManualInterrupt(): void {
+    if (!this.isManualMode()) {
+      throw new Error('This session is not in manual mode.');
+    }
+
+    if (!this.activeManualInstruction) {
+      this.log('Interrupt requested but no step-by-step instruction is running.');
+      return;
+    }
+
+    if (this.manualInterruptRequested) {
+      return;
+    }
+
+    this.manualInterruptRequested = true;
+    this.log(`Interrupt requested for current instruction: "${this.activeManualInstruction}"`);
+    this.addChatMessage('assistant', 'Interrupt received. I will wrap up the current action and pause.');
   }
 
   async continueWithFeedback(userMessage: string): Promise<void> {
@@ -704,6 +848,10 @@ export class LiveTestGenerator extends EventEmitter {
    * Stop the generation
    */
   async stop(): Promise<void> {
+    const cancelledInstruction = this.clearManualInstruction();
+    if (cancelledInstruction) {
+      this.log(`Step-by-step instruction "${cancelledInstruction}" canceled because the session stopped.`);
+    }
     this.isPaused = true;
     this.isRunning = false;
     this.updateStatus('stopped');
@@ -715,6 +863,7 @@ export class LiveTestGenerator extends EventEmitter {
     // Stop current execution
     this.isPaused = false;
     this.isRunning = false;
+    this.clearManualInstruction();
 
     // Close existing browser
     if (this.browser) {
@@ -919,11 +1068,22 @@ ${stepCode}
       return;
     }
 
-    this.userCorrections.shift();
+    const removed = this.userCorrections.shift();
 
     if (!this.userCorrections.length) {
-      this.log(`✓ User feedback addressed. Resuming original goal: "${this.options.goal}"`);
+      if (this.isManualMode() && removed) {
+        this.log(`✓ Finished step-by-step instruction: "${removed}"`);
+      } else {
+        this.log(`✓ User feedback addressed. Resuming original goal: "${this.options.goal}"`);
+      }
     }
+  }
+
+  private clearManualInstruction(): string | undefined {
+    const instruction = this.activeManualInstruction;
+    this.activeManualInstruction = undefined;
+    this.manualInterruptRequested = false;
+    return instruction;
   }
 
   private log(message: string): void {
@@ -934,6 +1094,12 @@ ${stepCode}
       payload: { message }
     });
     this.touch();
+  }
+
+  private enterManualAwaitingState(): void {
+    this.isPaused = true;
+    this.manualInterruptRequested = false;
+    this.updateStatus('awaiting_input');
   }
 
   private updateStatus(status: GenerationStatus): void {
@@ -974,6 +1140,12 @@ ${stepCode}
   }
 
   private async handleRetriesExhausted(failedAction: AIAction, error: string, screenshot?: string): Promise<void> {
+    if (this.isManualMode()) {
+      // Fallback safeguard - manual mode should use handleManualInstructionFailure instead
+      await this.handleManualInstructionFailure('step-by-step instruction', failedAction, error, screenshot);
+      return;
+    }
+
     this.log(`❌ Action failed after 3 attempts: ${error}`);
     this.log(`Browser left open for manual intervention.`);
 
@@ -993,6 +1165,36 @@ ${stepCode}
     // Add AI message with manual intervention request
     const helpMessage = `I tried multiple approaches but couldn't complete this action:\n\n${summary}\n\n**What you can do:**\n1. Manually perform the action in the visible browser window\n2. Once you've completed the action, type "done" and I'll observe what you did\n3. I'll generate the test code for your action and ask you to confirm\n4. Then we'll continue with the rest of the test\n\nOr, provide specific guidance on which selector to use, or use the restart button.`;
     this.addChatMessage('assistant', helpMessage);
+  }
+
+  private async handleManualInstructionFailure(
+    instruction: string,
+    failedAction: AIAction,
+    error: string,
+    screenshot?: string
+  ): Promise<void> {
+    const failedInstruction = this.clearManualInstruction() || instruction;
+    this.log(`Step-by-step instruction "${failedInstruction}" failed: ${error}`);
+    const summary = screenshot
+      ? await this.generateErrorSummary(failedAction, error, screenshot)
+      : error;
+    const message =
+      summary && summary !== error
+        ? `I couldn't complete "${failedInstruction}". ${summary}`
+        : `I couldn't complete "${failedInstruction}". Error: ${error}`;
+    this.addChatMessage('assistant', `${message}\n\nTry describing the element differently or reference its label/text.`);
+    this.enterManualAwaitingState();
+  }
+
+  private async handleManualUnexpectedError(instruction: string, error: any): Promise<void> {
+    const failedInstruction = this.clearManualInstruction() || instruction;
+    const message = error && typeof error.message === 'string' ? error.message : String(error);
+    this.log(`Step-by-step instruction "${failedInstruction}" encountered an error: ${message}`);
+    this.addChatMessage(
+      'assistant',
+      `Something went wrong while executing "${failedInstruction}". ${message}\nPlease adjust the instruction and try again.`
+    );
+    this.enterManualAwaitingState();
   }
 
   private async generateErrorSummary(action: AIAction, error: string, screenshot?: string): Promise<string> {

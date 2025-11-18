@@ -27,6 +27,7 @@ export default function GenerateStart() {
   const [savingCredential, setSavingCredential] = useState(false);
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [selectedScreenSize, setSelectedScreenSize] = useState('');
+  const [mode, setMode] = useState<'auto' | 'manual' | ''>('');
 
   useEffect(() => {
     let cancelled = false;
@@ -67,15 +68,26 @@ export default function GenerateStart() {
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    const trimmedUrl = startUrl.trim();
-    const trimmedGoal = goal.trim();
 
-    if (!trimmedUrl || !trimmedGoal) {
-      setMessage('Provide both a starting URL and goal.');
+    if (!mode) {
+      setMessage('Select a mode to continue.');
       return;
     }
 
-    const parsedSteps = Number.parseInt(maxSteps, 10) || 20;
+    const trimmedUrl = startUrl.trim();
+    const trimmedGoal = goal.trim();
+
+    if (!trimmedUrl) {
+      setMessage('Provide a starting URL.');
+      return;
+    }
+
+    if (mode === 'auto' && !trimmedGoal) {
+      setMessage('Provide a goal for self-driving tests.');
+      return;
+    }
+
+    const parsedSteps = mode === 'auto' ? Number.parseInt(maxSteps, 10) || 20 : undefined;
 
     setIsStarting(true);
     setMessage(null);
@@ -85,15 +97,28 @@ export default function GenerateStart() {
         ? SCREEN_SIZE_PRESETS.find((p) => p.id === selectedScreenSize)?.viewport
         : undefined;
 
-      const { sessionId } = await api.startGeneration({
+      const derivedGoal =
+        mode === 'auto'
+          ? trimmedGoal
+          : trimmedGoal || 'Step-by-step test session';
+      const derivedSuccess =
+        mode === 'auto' ? successCriteria.trim() || undefined : undefined;
+
+      const payload: Parameters<typeof api.startGeneration>[0] = {
         startUrl: trimmedUrl,
-        goal: trimmedGoal,
-        successCriteria: successCriteria.trim() || undefined,
-        maxSteps: parsedSteps,
-        keepBrowserOpen,
-        credentialId: selectedCredentialId || undefined,
-        viewportSize
-      });
+        goal: derivedGoal,
+        successCriteria: derivedSuccess,
+        keepBrowserOpen: mode === 'auto' ? keepBrowserOpen : true,
+        credentialId: mode === 'auto' ? selectedCredentialId || undefined : undefined,
+        viewportSize,
+        mode
+      };
+
+      if (mode === 'auto') {
+        payload.maxSteps = parsedSteps ?? 20;
+      }
+
+      const { sessionId } = await api.startGeneration(payload);
       navigate(`/generate/${sessionId}`);
     } catch (err) {
       const error = err instanceof Error ? err.message : 'Failed to start AI generation';
@@ -121,188 +146,251 @@ export default function GenerateStart() {
 
         <form onSubmit={handleSubmit} className="rounded-lg bg-white p-6 shadow space-y-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Starting URL *</label>
-            <input
-              type="url"
-              value={startUrl}
-              onChange={(e) => setStartUrl(e.target.value)}
-              required
-              placeholder="https://example.com/login"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Goal / What to test *</label>
-            <textarea
-              value={goal}
-              onChange={(e) => setGoal(e.target.value)}
-              required
-              rows={4}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Example: Register as Jennifer Test_Physician and confirm dashboard greets the doctor."
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Success Criteria (optional)</label>
-            <textarea
-              value={successCriteria}
-              onChange={(e) => setSuccessCriteria(e.target.value)}
-              rows={3}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder={'Example: Dashboard shows "Active MD License" card.'}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Credential (optional)</label>
-            {loadingCredentials ? (
-              <p className="text-sm text-gray-500">Loading credentials…</p>
-            ) : credentials.length === 0 ? (
-              <p className="text-sm text-gray-500">
-                No credentials saved. Add one below or in Settings.
-              </p>
-            ) : (
-              <select
-                value={selectedCredentialId}
-                onChange={(e) => setSelectedCredentialId(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">No credential</option>
-                {credentials.map((cred) => (
-                  <option key={cred.id} value={cred.id}>
-                    {cred.name} · {cred.username}
-                  </option>
-                ))}
-              </select>
-            )}
-            <div className="mt-2 flex flex-wrap gap-4 text-xs text-blue-600">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Mode</label>
+            <div className="grid gap-3 md:grid-cols-2">
               <button
                 type="button"
-                onClick={() => {
-                  setShowCredentialForm((prev) => !prev);
-                  setCredentialError(null);
-                }}
-                className="font-medium hover:underline"
+                onClick={() => setMode('auto')}
+                className={`rounded-lg border px-4 py-3 text-left transition ${
+                  mode === 'auto'
+                    ? 'border-blue-500 bg-blue-50 text-blue-900 shadow-sm'
+                    : 'border-gray-200 text-gray-700 hover:border-gray-300'
+                }`}
               >
-                {showCredentialForm ? 'Cancel new credential' : '+ Add new credential'}
+                <p className="text-sm font-semibold">Self-driving Test</p>
+                <p className="text-xs mt-1 text-gray-600">
+                  Let the agent plan and execute the full test to hit your goal.
+                </p>
               </button>
               <button
                 type="button"
-                onClick={() => navigate('/settings')}
-                className="font-medium hover:underline"
+                onClick={() => setMode('manual')}
+                className={`rounded-lg border px-4 py-3 text-left transition ${
+                  mode === 'manual'
+                    ? 'border-blue-500 bg-blue-50 text-blue-900 shadow-sm'
+                    : 'border-gray-200 text-gray-700 hover:border-gray-300'
+                }`}
               >
-                Manage in Settings →
+                <p className="text-sm font-semibold">Step-by-step Test</p>
+                <p className="text-xs mt-1 text-gray-600">
+                  Browser opens and waits for each instruction (e.g., “click Register”).
+                </p>
               </button>
             </div>
-            {showCredentialForm && (
-              <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
-                <div>
-                  <label className="text-xs font-medium text-gray-600">Display Name</label>
-                  <input
-                    type="text"
-                    value={credentialForm.name}
-                    onChange={(e) =>
-                      setCredentialForm((prev) => ({ ...prev, name: e.target.value }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-gray-600">Username / Email</label>
-                  <input
-                    type="text"
-                    value={credentialForm.username}
-                    onChange={(e) =>
-                      setCredentialForm((prev) => ({ ...prev, username: e.target.value }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-gray-600">Password</label>
-                  <input
-                    type="password"
-                    value={credentialForm.password}
-                    onChange={(e) =>
-                      setCredentialForm((prev) => ({ ...prev, password: e.target.value }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-gray-600">Notes (optional)</label>
-                  <textarea
-                    value={credentialForm.notes}
-                    onChange={(e) =>
-                      setCredentialForm((prev) => ({ ...prev, notes: e.target.value }))
-                    }
-                    rows={2}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                {credentialError && (
-                  <p className="text-xs text-red-600">{credentialError}</p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void handleCreateCredential()}
-                  disabled={savingCredential}
-                  className="w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {savingCredential ? 'Saving…' : 'Save Credential'}
-                </button>
-              </div>
+            {mode ? (
+              mode === 'manual' ? (
+                <p className="mt-2 text-xs text-gray-500">
+                  Chromium launches at your URL and pauses after every action so you can steer the next step.
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-gray-500">
+                  Recommended for most flows — watch the AI drive end-to-end and edit if needed.
+                </p>
+              )
+            ) : (
+              <p className="mt-2 text-xs text-gray-500">Pick a mode to continue.</p>
             )}
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Max Steps</label>
-            <input
-              type="number"
-              min="1"
-              max="50"
-              value={maxSteps}
-              onChange={(e) => setMaxSteps(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <p className="mt-1 text-xs text-gray-500">Default is 20. Increase for longer flows.</p>
-          </div>
+          {!mode ? (
+            <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-600">
+              Select a mode above to configure the test.
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Starting URL *</label>
+                <input
+                  type="url"
+                  value={startUrl}
+                  onChange={(e) => setStartUrl(e.target.value)}
+                  required
+                  placeholder="https://example.com/login"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Screen Size (optional)</label>
-            <select
-              value={selectedScreenSize}
-              onChange={(e) => setSelectedScreenSize(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">Default (Browser default)</option>
-              {SCREEN_SIZE_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-gray-500">
-              Test against specific viewport sizes like mobile, tablet, or desktop.
-            </p>
-          </div>
+              {mode === 'auto' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Goal / What to test *</label>
+                    <textarea
+                      value={goal}
+                      onChange={(e) => setGoal(e.target.value)}
+                      required
+                      rows={4}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Example: Register as Jennifer Test_Physician and confirm dashboard greets the doctor."
+                    />
+                  </div>
 
-          <label className="flex items-start gap-3 rounded-lg border border-gray-200 px-3 py-3">
-            <input
-              type="checkbox"
-              checked={keepBrowserOpen}
-              onChange={(e) => setKeepBrowserOpen(e.target.checked)}
-              className="mt-1 rounded"
-            />
-            <span className="text-sm text-gray-700">
-              Leave the Chromium window open after generation completes
-              <span className="block text-xs text-gray-500">
-                Useful for inspecting the final state before saving.
-              </span>
-            </span>
-          </label>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Success Criteria (optional)</label>
+                    <textarea
+                      value={successCriteria}
+                      onChange={(e) => setSuccessCriteria(e.target.value)}
+                      rows={3}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder={'Example: Dashboard shows "Active MD License" card.'}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Max Steps</label>
+                    <input
+                      type="number"
+                      value={maxSteps}
+                      min={1}
+                      max={200}
+                      onChange={(e) => setMaxSteps(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Defaults to 20"
+                    />
+                  </div>
+                </>
+              )}
+
+              {mode === 'auto' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Credential (optional)</label>
+                  {loadingCredentials ? (
+                    <p className="text-sm text-gray-500">Loading credentials…</p>
+                  ) : credentials.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                      No credentials saved. Add one below or in Settings.
+                    </p>
+                  ) : (
+                    <select
+                      value={selectedCredentialId}
+                      onChange={(e) => setSelectedCredentialId(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">No credential</option>
+                      {credentials.map((cred) => (
+                        <option key={cred.id} value={cred.id}>
+                          {cred.name} · {cred.username}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-4 text-xs text-blue-600">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCredentialForm((prev) => !prev);
+                        setCredentialError(null);
+                      }}
+                      className="font-medium hover:underline"
+                    >
+                      {showCredentialForm ? 'Cancel new credential' : '+ Add new credential'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => navigate('/settings')}
+                      className="font-medium hover:underline"
+                    >
+                      Manage in Settings →
+                    </button>
+                  </div>
+                  {showCredentialForm && (
+                    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600">Display Name</label>
+                        <input
+                          type="text"
+                          value={credentialForm.name}
+                          onChange={(e) =>
+                            setCredentialForm((prev) => ({ ...prev, name: e.target.value }))
+                          }
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-600">Username / Email</label>
+                        <input
+                          type="text"
+                          value={credentialForm.username}
+                          onChange={(e) =>
+                            setCredentialForm((prev) => ({ ...prev, username: e.target.value }))
+                          }
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-600">Password</label>
+                        <input
+                          type="password"
+                          value={credentialForm.password}
+                          onChange={(e) =>
+                            setCredentialForm((prev) => ({ ...prev, password: e.target.value }))
+                          }
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-600">Notes (optional)</label>
+                        <textarea
+                          value={credentialForm.notes}
+                          onChange={(e) =>
+                            setCredentialForm((prev) => ({ ...prev, notes: e.target.value }))
+                          }
+                          rows={2}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      {credentialError && (
+                        <p className="text-xs text-red-600">{credentialError}</p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void handleCreateCredential()}
+                        disabled={savingCredential}
+                        className="w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {savingCredential ? 'Saving…' : 'Save Credential'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Screen Size (optional)</label>
+                <select
+                  value={selectedScreenSize}
+                  onChange={(e) => setSelectedScreenSize(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Default (Browser default)</option>
+                  {SCREEN_SIZE_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  Test against specific viewport sizes like mobile, tablet, or desktop.
+                </p>
+              </div>
+
+              {mode === 'auto' && (
+                <label className="flex items-start gap-3 rounded-lg border border-gray-200 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    checked={keepBrowserOpen}
+                    onChange={(e) => setKeepBrowserOpen(e.target.checked)}
+                    className="mt-1 rounded"
+                  />
+                  <span className="text-sm text-gray-700">
+                    Leave the Chromium window open after generation completes
+                    <span className="block text-xs text-gray-500">
+                      Useful for inspecting the final state before saving.
+                    </span>
+                  </span>
+                </label>
+              )}
+            </>
+          )}
 
           {message && (
             <p className="text-sm text-red-600">{message}</p>
@@ -312,11 +400,15 @@ export default function GenerateStart() {
             <button
               type="button"
               onClick={() => {
+                setMode('');
                 setStartUrl(defaultStartUrl || '');
                 setGoal('');
                 setSuccessCriteria('');
                 setMaxSteps('20');
                 setSelectedScreenSize('');
+                setSelectedCredentialId('');
+                setShowCredentialForm(false);
+                setCredentialError(null);
                 setKeepBrowserOpen(false);
                 setMessage(null);
               }}

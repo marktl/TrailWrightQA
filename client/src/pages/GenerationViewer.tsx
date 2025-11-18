@@ -9,6 +9,8 @@ import type {
   ChatMessage
 } from '../../../shared/types';
 
+const CATEGORY_DATALIST_ID = 'generation-category-options';
+
 export default function GenerationViewer() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
@@ -19,6 +21,7 @@ export default function GenerationViewer() {
   const [error, setError] = useState<string | null>(null);
   const [isStopping, setIsStopping] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isInterrupting, setIsInterrupting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isPausing, setIsPausing] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
@@ -40,6 +43,7 @@ export default function GenerationViewer() {
   const [savedTest, setSavedTest] = useState<ApiTestMetadata | null>(null);
   const [autoSaveNotice, setAutoSaveNotice] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<ApiCredential[]>([]);
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [saveForm, setSaveForm] = useState({
     name: '',
@@ -50,6 +54,19 @@ export default function GenerationViewer() {
   });
   const [saveModalError, setSaveModalError] = useState<string | null>(null);
   const [savingTest, setSavingTest] = useState(false);
+
+  function addCategoryOption(name?: string | null) {
+    const trimmed = name?.trim();
+    if (!trimmed) {
+      return;
+    }
+    setCategoryOptions((prev) => {
+      if (prev.includes(trimmed)) {
+        return prev;
+      }
+      return [...prev, trimmed].sort((a, b) => a.localeCompare(b));
+    });
+  }
 
   useEffect(() => {
     if (!sessionId) {
@@ -226,6 +243,31 @@ export default function GenerationViewer() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    api
+      .listTests()
+      .then(({ tests }) => {
+        if (cancelled) {
+          return;
+        }
+        const options = Array.from(
+          new Set(
+            tests
+              .map((test) => test.folder?.trim())
+              .filter((name): name is string => Boolean(name))
+          )
+        ).sort((a, b) => a.localeCompare(b));
+        setCategoryOptions(options);
+      })
+      .catch((err) => {
+        console.warn('Failed to load categories', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (sessionConfigEditing) {
       return;
     }
@@ -364,8 +406,13 @@ export default function GenerationViewer() {
 
     setSendingChat(true);
     try {
-      const { state: updatedState } = await api.sendGenerationChat(sessionId, chatInput.trim());
-      setState(updatedState);
+      const trimmed = chatInput.trim();
+      if (stepMode) {
+        await api.sendManualInstruction(sessionId, trimmed);
+      } else {
+        const { state: updatedState } = await api.sendGenerationChat(sessionId, trimmed);
+        setState(updatedState);
+      }
       setChatInput('');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to send message';
@@ -386,6 +433,20 @@ export default function GenerationViewer() {
       setError(message);
     } finally {
       setIsStopping(false);
+    }
+  }
+
+  async function handleInterrupt() {
+    if (!sessionId || isInterrupting) return;
+
+    setIsInterrupting(true);
+    try {
+      await api.interruptManualInstruction(sessionId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to interrupt instruction';
+      setError(message);
+    } finally {
+      setIsInterrupting(false);
     }
   }
 
@@ -607,6 +668,7 @@ export default function GenerationViewer() {
         credentialId: saveForm.credentialId || undefined
       });
       setSavedTest(test);
+      addCategoryOption(test.folder);
       setState((prev) => (prev ? { ...prev, savedTestId: test.id } : prev));
       setAutoSaveNotice(`Saved as "${test.name}"`);
       setSaveModalOpen(false);
@@ -647,11 +709,13 @@ export default function GenerationViewer() {
     );
   }
 
+  const stepMode = state?.mode === 'manual';
   const statusColors = {
     initializing: 'bg-yellow-100 text-yellow-800',
     running: 'bg-blue-100 text-blue-800',
     thinking: 'bg-purple-100 text-purple-800',
     paused: 'bg-amber-100 text-amber-800',
+    awaiting_input: 'bg-teal-100 text-teal-800',
     completed: 'bg-green-100 text-green-800',
     failed: 'bg-red-100 text-red-800',
     stopped: 'bg-gray-100 text-gray-800'
@@ -660,11 +724,28 @@ export default function GenerationViewer() {
   const statusColor = state ? statusColors[state.status] ?? 'bg-gray-100 text-gray-800' : 'bg-gray-100 text-gray-800';
   const isRunning = state?.status === 'running' || state?.status === 'thinking';
   const isPaused = state?.status === 'paused';
+  const waitingForInstruction = stepMode && state?.status === 'awaiting_input';
   const feedbackDisabled = !state || state.status === 'initializing' || isRunning;
-  const canPause = Boolean(isRunning);
-  const canStop = Boolean(state && (isRunning || isPaused));
-  const canRestart = Boolean(state && state.status !== 'initializing');
-  const canSave = state && (state.status === 'completed' || state.status === 'failed' || state.status === 'stopped');
+  const composerDisabled = stepMode ? !waitingForInstruction || sendingChat : feedbackDisabled;
+  const canPause = !stepMode && Boolean(isRunning);
+  const canInterrupt = Boolean(stepMode && state && (state.status === 'running' || state.status === 'thinking'));
+  const canStop = Boolean(!stepMode && state && (isRunning || isPaused));
+  const canRestart = Boolean(state && state.status !== 'initializing' && !stepMode);
+  const canSave = stepMode
+    ? Boolean(state && steps.length > 0)
+    : Boolean(state && (state.status === 'completed' || state.status === 'failed' || state.status === 'stopped'));
+  const composerPlaceholder = stepMode
+    ? waitingForInstruction
+      ? 'Example: Complete the registration form with the provided test data…'
+      : 'Waiting for the previous instruction to complete…'
+    : feedbackDisabled
+      ? 'Pause the generation to provide feedback...'
+      : 'Describe the next action you want the AI to take...';
+  const sendButtonLabel = stepMode ? (sendingChat ? 'Running…' : 'Run Instruction') : sendingChat ? 'Sending…' : 'Send Feedback';
+  const statusLabel =
+    state?.status === 'awaiting_input'
+      ? 'AWAITING NEXT STEP'
+      : state?.status?.toUpperCase() ?? 'STATUS';
 
   const activeScreenshotStep =
     activeScreenshotIndex !== null ? steps[activeScreenshotIndex] : null;
@@ -788,98 +869,110 @@ export default function GenerationViewer() {
                   <p className="text-sm font-mono text-blue-600 break-all">{state.startUrl}</p>
                 )}
               </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                  Max Steps
-                </p>
-                {sessionConfigEditing ? (
-                  <input
-                    type="number"
-                    min={1}
-                    max={200}
-                    value={sessionConfigMaxSteps}
-                    onChange={(e) => setSessionConfigMaxSteps(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
-                    disabled={savingSessionConfig}
-                  />
-                ) : (
-                  <p className="text-sm text-gray-900">
-                    {state.maxSteps}{' '}
-                    <span className="text-xs text-gray-500">(current session limit)</span>
+              {!stepMode && (
+                <div>
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                    Max Steps
                   </p>
-                )}
-              </div>
+                  {sessionConfigEditing ? (
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={sessionConfigMaxSteps}
+                      onChange={(e) => setSessionConfigMaxSteps(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                      disabled={savingSessionConfig}
+                    />
+                  ) : (
+                    <p className="text-sm text-gray-900">
+                      {state.maxSteps}{' '}
+                      <span className="text-xs text-gray-500">(current session limit)</span>
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
             <div className="mt-4 space-y-3">
-              <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Goal</p>
-                {sessionConfigEditing ? (
-                  <textarea
-                    value={sessionConfigPrompt}
-                    onChange={(e) => setSessionConfigPrompt(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
-                    rows={3}
-                    disabled={savingSessionConfig}
-                  />
-                ) : (
-                  <p className="text-sm text-gray-900 whitespace-pre-line">{state.goal}</p>
-                )}
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                  Success Criteria
-                </p>
-                {sessionConfigEditing ? (
-                  <textarea
-                    value={sessionConfigSuccessCriteria}
-                    onChange={(e) => setSessionConfigSuccessCriteria(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
-                    rows={3}
-                    disabled={savingSessionConfig}
-                  />
-                ) : (
-                  <p className="text-sm text-gray-900 whitespace-pre-line">
-                    {state.successCriteria || 'Not specified'}
+              {(!stepMode || !sessionConfigEditing) && (
+                <div>
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                    Goal
                   </p>
-                )}
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                  Credential
-                </p>
-                {state.credentialSummary ? (
-                  <p className="text-sm text-gray-900">
-                    {state.credentialSummary.name}{' '}
-                    <span className="text-xs text-gray-500">
-                      ({state.credentialSummary.username})
-                    </span>
-                  </p>
-                ) : (
-                  <p className="text-sm text-gray-500">Not attached</p>
-                )}
-                <p className="text-xs text-gray-400">Add or change the credential when saving.</p>
-              </div>
+                  {sessionConfigEditing ? (
+                    <textarea
+                      value={sessionConfigPrompt}
+                      onChange={(e) => setSessionConfigPrompt(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                      rows={3}
+                      disabled={savingSessionConfig}
+                    />
+                  ) : (
+                    <p className="text-sm text-gray-900 whitespace-pre-line">{state.goal}</p>
+                  )}
+                </div>
+              )}
+              {!stepMode && (
+                <>
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                      Success Criteria
+                    </p>
+                    {sessionConfigEditing ? (
+                      <textarea
+                        value={sessionConfigSuccessCriteria}
+                        onChange={(e) => setSessionConfigSuccessCriteria(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                        rows={3}
+                        disabled={savingSessionConfig}
+                      />
+                    ) : (
+                      <p className="text-sm text-gray-900 whitespace-pre-line">
+                        {state.successCriteria || 'Not specified'}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                      Credential
+                    </p>
+                    {state.credentialSummary ? (
+                      <p className="text-sm text-gray-900">
+                        {state.credentialSummary.name}{' '}
+                        <span className="text-xs text-gray-500">
+                          ({state.credentialSummary.username})
+                        </span>
+                      </p>
+                    ) : (
+                      <p className="text-sm text-gray-500">Not attached</p>
+                    )}
+                    <p className="text-xs text-gray-400">Add or change the credential when saving.</p>
+                  </div>
+                </>
+              )}
             </div>
             {sessionConfigError && (
               <p className="mt-3 text-sm text-red-600">{sessionConfigError}</p>
             )}
-            <div className="mt-4 border-t border-gray-100 pt-4">
-              <label className="flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={state.keepBrowserOpen ?? false}
-                  onChange={(e) => handleToggleKeepBrowserOpen(e.target.checked)}
-                  className="mt-1 rounded"
-                  disabled={updatingKeepBrowserOpen}
-                />
-                <span className="text-sm text-gray-800">
-                  Leave the Chromium window open after generation completes
-                  <span className="block text-xs text-gray-500">
-                    Use this to inspect the final state before saving the test.
+            {!stepMode && (
+              <div className="mt-4 border-t border-gray-100 pt-4">
+                <label className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={state.keepBrowserOpen ?? false}
+                    onChange={(e) => handleToggleKeepBrowserOpen(e.target.checked)}
+                    className="mt-1 rounded"
+                    disabled={updatingKeepBrowserOpen}
+                  />
+                  <span className="text-sm text-gray-800">
+                    Leave the Chromium window open after generation completes
+                    <span className="block text-xs text-gray-500">
+                      Use this to inspect the final state before saving the test.
+                    </span>
                   </span>
-                </span>
-              </label>
-            </div>
+                </label>
+              </div>
+            )}
           </div>
         )}
 
@@ -888,13 +981,22 @@ export default function GenerationViewer() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <span className={`px-3 py-1 rounded-full text-sm font-medium ${statusColor}`}>
-                {state?.status.toUpperCase()}
+                {statusLabel}
               </span>
               <div className="text-sm text-gray-600">
                 <span className="font-medium">{state?.stepsTaken || 0}</span> / {state?.maxSteps || 20} steps
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
+              {canInterrupt && (
+                <button
+                  onClick={handleInterrupt}
+                  disabled={isInterrupting}
+                  className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50"
+                >
+                  {isInterrupting ? 'Interrupting…' : 'Interrupt'}
+                </button>
+              )}
               {canPause && (
                 <button
                   onClick={handlePause}
@@ -953,18 +1055,24 @@ export default function GenerationViewer() {
           )}
         </div>
 
-        {/* Guidance Panel */}
+        {/* Guidance / Manual Panel */}
         <div className="bg-white rounded-lg shadow p-6 mb-6">
           <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
             <div>
-              <h2 className="text-xl font-semibold text-gray-900">Guidance & Feedback</h2>
+              <h2 className="text-xl font-semibold text-gray-900">
+                {stepMode ? 'Step-by-step Builder' : 'Guidance & Feedback'}
+              </h2>
               <p className="text-sm text-gray-600 mt-1">
-                {feedbackDisabled
-                  ? 'Pause or stop the generation to provide updated instructions.'
-                  : 'Share feedback to steer the next actions before resuming.'}
+                {stepMode
+                  ? waitingForInstruction
+                    ? 'Describe what the browser should do next (you can include multiple actions). I will keep going until it is done.'
+                    : 'Working on your instruction. Use Interrupt if you need to stop early.'
+                  : feedbackDisabled
+                    ? 'Pause or stop the generation to provide updated instructions.'
+                    : 'Share feedback to steer the next actions before resuming.'}
               </p>
             </div>
-            {isPaused && (
+            {!stepMode && isPaused && (
               <button
                 onClick={handleResume}
                 disabled={isResuming}
@@ -975,14 +1083,16 @@ export default function GenerationViewer() {
             )}
           </div>
 
-          <div className="mb-4 rounded-lg border border-gray-100 bg-gray-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">
-              Original Prompt
-            </p>
-            <p className="mt-2 text-sm text-gray-900 whitespace-pre-line">
-              {state?.goal || '—'}
-            </p>
-          </div>
+          {!stepMode && (
+            <div className="mb-4 rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">
+                Original Prompt
+              </p>
+              <p className="mt-2 text-sm text-gray-900 whitespace-pre-line">
+                {state?.goal || '—'}
+              </p>
+            </div>
+          )}
 
           {/* Chat Messages */}
           <div ref={chatRef} className="mb-4 space-y-3 max-h-[360px] overflow-y-auto pr-1">
@@ -1006,7 +1116,9 @@ export default function GenerationViewer() {
               ))
             ) : (
               <p className="text-gray-500 text-sm italic text-center py-8">
-                No feedback yet. Pause the test to provide guidance.
+                {stepMode
+                  ? 'No instructions yet. Describe the first action to perform.'
+                  : 'No feedback yet. Pause the test to provide guidance.'}
               </p>
             )}
           </div>
@@ -1023,19 +1135,15 @@ export default function GenerationViewer() {
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey && !feedbackDisabled && chatInput.trim()) {
+                if (e.key === 'Enter' && !e.shiftKey && !composerDisabled && chatInput.trim()) {
                   e.preventDefault();
                   void handleSendChat();
                 }
               }}
-              disabled={feedbackDisabled}
-              placeholder={
-                feedbackDisabled
-                  ? 'Pause the generation to provide feedback...'
-                  : 'Describe the next action you want the AI to take...'
-              }
+              disabled={composerDisabled}
+              placeholder={composerPlaceholder}
               className={`w-full min-h-[90px] rounded-lg border px-3 py-2 text-sm ${
-                feedbackDisabled
+                composerDisabled
                   ? 'border-gray-200 bg-gray-50 text-gray-500 cursor-not-allowed'
                   : 'border-gray-300 bg-white focus:border-blue-500 focus:ring-blue-500'
               }`}
@@ -1043,10 +1151,10 @@ export default function GenerationViewer() {
             <div className="flex flex-wrap items-center gap-3">
               <button
                 onClick={handleSendChat}
-                disabled={sendingChat || !chatInput.trim() || feedbackDisabled}
+                disabled={sendingChat || !chatInput.trim() || composerDisabled}
                 className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {sendingChat ? 'Sending…' : 'Send Feedback'}
+                {sendButtonLabel}
               </button>
               <button
                 type="button"
@@ -1251,16 +1359,29 @@ export default function GenerationViewer() {
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
-                  <label className="text-sm font-medium text-gray-700">Folder / Suite</label>
+                  <label className="text-sm font-medium text-gray-700">Category / Suite</label>
                   <input
                     type="text"
                     value={saveForm.folder}
                     onChange={(e) =>
                       setSaveForm((prev) => ({ ...prev, folder: e.target.value }))
                     }
-                    placeholder="e.g., Authentication"
+                    list={categoryOptions.length > 0 ? CATEGORY_DATALIST_ID : undefined}
+                    placeholder={
+                      categoryOptions.length ? 'Select or create a category' : 'e.g., Authentication'
+                    }
                     className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
                   />
+                  {categoryOptions.length > 0 && (
+                    <datalist id={CATEGORY_DATALIST_ID}>
+                      {categoryOptions.map((category) => (
+                        <option key={category} value={category} />
+                      ))}
+                    </datalist>
+                  )}
+                  <p className="mt-1 text-xs text-gray-500">
+                    Choose an existing category or type a new name.
+                  </p>
                 </div>
                 <div>
                   <label className="text-sm font-medium text-gray-700">Tags</label>

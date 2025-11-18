@@ -580,7 +580,7 @@ export default function TestWorkspace() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Folder / Suite</label>
+                  <label className="text-sm font-medium text-gray-700">Category / Suite</label>
                   <input
                     type="text"
                     value={folder}

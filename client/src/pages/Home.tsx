@@ -38,12 +38,12 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTag, setActiveTag] = useState<string | null>(null);
-  const [selectedFolder, setSelectedFolder] = useState<'all' | 'uncategorized' | string>('all');
+  const [selectedCategory, setSelectedCategory] = useState<'all' | 'uncategorized' | string>('all');
   const [sortBy, setSortBy] = useState<'recent' | 'name' | 'created' | 'status'>('recent');
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState('');
   const [bulkTagInput, setBulkTagInput] = useState('');
-  const [bulkFolderInput, setBulkFolderInput] = useState('');
+  const [bulkCategoryInput, setBulkCategoryInput] = useState('');
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
   const [performingBulk, setPerformingBulk] = useState(false);
   const runStatusPills: Record<string, string> = {
@@ -178,7 +178,7 @@ export default function Home() {
     return Array.from(tags).sort((a, b) => a.localeCompare(b));
   }, [tests]);
 
-  const folderOptions = useMemo(() => {
+  const categoryOptions = useMemo(() => {
     const folders = new Set<string>();
     tests.forEach((test) => {
       if (test.folder) {
@@ -210,16 +210,16 @@ export default function Home() {
       if (activeTag && !(test.tags ?? []).includes(activeTag)) {
         return false;
       }
-      if (selectedFolder === 'uncategorized') {
+      if (selectedCategory === 'uncategorized') {
         if (test.folder) {
           return false;
         }
-      } else if (selectedFolder !== 'all' && test.folder !== selectedFolder) {
+      } else if (selectedCategory !== 'all' && test.folder !== selectedCategory) {
         return false;
       }
       return true;
     });
-  }, [tests, searchQuery, activeTag, selectedFolder]);
+  }, [tests, searchQuery, activeTag, selectedCategory]);
 
   const sortedTests = useMemo(() => {
     const statusRank: Record<string, number> = {
@@ -269,7 +269,7 @@ export default function Home() {
     setSelectedTests([]);
     setBulkAction('');
     setBulkTagInput('');
-    setBulkFolderInput('');
+    setBulkCategoryInput('');
     setBulkFeedback(null);
   }
 
@@ -322,15 +322,15 @@ export default function Home() {
           setBulkFeedback(`Added tags to ${selectedTests.length} test(s).`);
           break;
         }
-        case 'folder': {
-          const targetFolder = bulkFolderInput.trim();
+        case 'category': {
+          const targetCategory = bulkCategoryInput.trim();
           for (const id of selectedTests) {
-            await api.updateTestMetadata(id, { folder: targetFolder || null });
+            await api.updateTestMetadata(id, { folder: targetCategory || null });
           }
           setBulkFeedback(
-            targetFolder
-              ? `Moved ${selectedTests.length} test(s) to "${targetFolder}".`
-              : `Cleared folder on ${selectedTests.length} test(s).`
+            targetCategory
+              ? `Moved ${selectedTests.length} test(s) to "${targetCategory}".`
+              : `Cleared category on ${selectedTests.length} test(s).`
           );
           break;
         }
@@ -445,15 +445,15 @@ export default function Home() {
 
           <div className="flex flex-wrap items-center gap-3 text-sm text-gray-700">
             <div className="flex items-center gap-2">
-              <span className="text-xs uppercase text-gray-500">Folder</span>
+              <span className="text-xs uppercase text-gray-500">Category</span>
               <select
-                value={selectedFolder}
-                onChange={(e) => setSelectedFolder(e.target.value as typeof selectedFolder)}
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value as typeof selectedCategory)}
                 className="rounded-md border border-gray-300 px-2 py-1 text-sm"
               >
-                <option value="all">All folders</option>
+                <option value="all">All categories</option>
                 <option value="uncategorized">Uncategorized</option>
-                {folderOptions.map((folderName) => (
+                {categoryOptions.map((folderName) => (
                   <option key={folderName} value={folderName}>
                     {folderName}
                   </option>
@@ -486,12 +486,12 @@ export default function Home() {
             >
               Select filtered
             </button>
-            {(searchQuery || activeTag || selectedFolder !== 'all') && (
+            {(searchQuery || activeTag || selectedCategory !== 'all') && (
               <button
                 onClick={() => {
                   setSearchQuery('');
                   setActiveTag(null);
-                  setSelectedFolder('all');
+                  setSelectedCategory('all');
                 }}
                 className="text-xs text-blue-600 hover:underline"
               >
@@ -515,7 +515,7 @@ export default function Home() {
                     <option value="">Bulk action…</option>
                     <option value="run">Run selected</option>
                     <option value="tag">Add tags</option>
-                    <option value="folder">Move to folder</option>
+                    <option value="category">Move to category</option>
                     <option value="delete">Delete</option>
                   </select>
                   {bulkAction === 'tag' && (
@@ -527,12 +527,12 @@ export default function Home() {
                       className="rounded-md border border-blue-300 px-3 py-2 text-sm"
                     />
                   )}
-                  {bulkAction === 'folder' && (
+                  {bulkAction === 'category' && (
                     <input
                       type="text"
-                      value={bulkFolderInput}
-                      onChange={(e) => setBulkFolderInput(e.target.value)}
-                      placeholder="Folder name"
+                      value={bulkCategoryInput}
+                      onChange={(e) => setBulkCategoryInput(e.target.value)}
+                      placeholder="Category name"
                       className="rounded-md border border-blue-300 px-3 py-2 text-sm"
                     />
                   )}

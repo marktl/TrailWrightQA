@@ -6,7 +6,8 @@ import type {
   LiveGenerationState,
   LiveGenerationEvent,
   Test,
-  TestMetadata
+  TestMetadata,
+  GenerationStatus
 } from '../../../shared/types.js';
 import { LiveTestGenerator } from '../playwright/liveTestGenerator.js';
 import { loadConfig } from '../storage/config.js';
@@ -327,6 +328,55 @@ router.post('/:sessionId/resume', (req, res) => {
   res.json({ success: true, state: generator.getState() });
 });
 
+router.post('/:sessionId/manual-step', async (req, res) => {
+  const { sessionId } = req.params;
+  const { instruction } = req.body ?? {};
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!generator.isManualMode()) {
+    return res.status(400).json({ error: 'Session is not in manual mode' });
+  }
+
+  const trimmed = typeof instruction === 'string' ? instruction.trim() : '';
+  if (!trimmed) {
+    return res.status(400).json({ error: 'Instruction is required' });
+  }
+
+  try {
+    await generator.executeManualInstruction(trimmed);
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    console.error(`[generate] Manual step error for session ${sessionId}:`, error);
+    res
+      .status(400)
+      .json({ error: error?.message || 'Unable to execute manual instruction', state: generator.getState() });
+  }
+});
+
+router.post('/:sessionId/manual-interrupt', (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!generator.isManualMode()) {
+    return res.status(400).json({ error: 'Session is not in manual mode' });
+  }
+
+  try {
+    generator.requestManualInterrupt();
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Unable to interrupt manual instruction' });
+  }
+});
+
 router.patch('/:sessionId/goal', (req, res) => {
   const { sessionId } = req.params;
   const { goal } = req.body;
@@ -492,7 +542,10 @@ router.post('/:sessionId/save', async (req, res) => {
 
   const state = generator.getState();
 
-  if (!['completed', 'failed', 'stopped'].includes(state.status)) {
+  const terminalStatuses: GenerationStatus[] = ['completed', 'failed', 'stopped'];
+  const manualReady = generator.isManualMode() && state.status === 'awaiting_input';
+
+  if (!terminalStatuses.includes(state.status) && !manualReady) {
     return res.status(400).json({ error: 'Generation is still in progress' });
   }
 

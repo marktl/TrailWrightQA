@@ -254,6 +254,15 @@ export const api = {
         body: JSON.stringify({ message })
       }
     ),
+  sendManualInstruction: (sessionId: string, instruction: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/manual-step`, {
+      method: 'POST',
+      body: JSON.stringify({ instruction })
+    }),
+  interruptManualInstruction: (sessionId: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/manual-interrupt`, {
+      method: 'POST'
+    }),
   deleteGenerationStep: (sessionId: string, stepNumber: number) =>
     fetchApi<{ success: boolean; state: LiveGenerationState }>(
       `/generate/${sessionId}/steps/${stepNumber}`,
