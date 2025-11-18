@@ -18,6 +18,7 @@ import type {
   RunResult,
   RunScreenshot
 } from '../../../shared/types';
+import { SCREEN_SIZE_PRESETS } from '../constants/screenSizes';
 
 const statusLabels: Record<RunStatus, string> = {
   queued: 'Queued',
@@ -90,6 +91,7 @@ export default function TestWorkspace() {
   const [headedNotice, setHeadedNotice] = useState<string | null>(null);
   const [speed, setSpeed] = useState(1);
   const [keepBrowserOpen, setKeepBrowserOpen] = useState(false);
+  const [selectedScreenSize, setSelectedScreenSize] = useState('');
   const [startingRun, setStartingRun] = useState(false);
 
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -366,7 +368,11 @@ export default function TestWorkspace() {
     setError(null);
 
     try {
-      const { runId } = await api.runTest(testId, { headed, speed, keepBrowserOpen });
+      const viewportSize = selectedScreenSize
+        ? SCREEN_SIZE_PRESETS.find((p) => p.id === selectedScreenSize)?.viewport
+        : undefined;
+
+      const { runId } = await api.runTest(testId, { headed, speed, keepBrowserOpen, viewportSize });
       setActiveRunId(runId);
       setRunState(null);
       setTimeout(() => {
@@ -893,6 +899,25 @@ export default function TestWorkspace() {
                   <span>Slower</span>
                   <span>Normal</span>
                 </div>
+              </div>
+
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Screen Size</label>
+                <select
+                  value={selectedScreenSize}
+                  onChange={(e) => setSelectedScreenSize(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Default (Browser default)</option>
+                  {SCREEN_SIZE_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  Run test with specific viewport size
+                </p>
               </div>
 
               <button

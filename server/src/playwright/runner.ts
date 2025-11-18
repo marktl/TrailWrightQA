@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import type { Dirent } from 'fs';
 import type { RunResult, RunScreenshot } from '../types.js';
+import type { ViewportSize } from '../../../shared/types.js';
 import { serializeCredentialsBlob } from '../storage/credentials.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
 import { loadTest, saveTest } from '../storage/tests.js';
@@ -13,6 +14,7 @@ export interface RunTestOptions {
   headed?: boolean;
   speed?: number;
   keepOpen?: boolean;
+  viewportSize?: ViewportSize;
 }
 
 export interface RunExecutionContext {
@@ -27,6 +29,7 @@ export interface RunExecutionContext {
     speed: number;
     slowMo: number;
     keepOpen: boolean;
+    viewportSize?: ViewportSize;
   };
 }
 
@@ -161,7 +164,7 @@ function collectScreenshotAttachments(playwrightResults: any): ScreenshotAttachm
 export async function createRunExecutionContext(
   dataDir: string,
   testId: string,
-  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean }
+  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean; viewportSize?: ViewportSize }
 ): Promise<RunExecutionContext> {
   const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}_${testId}`;
   const runDir = path.join(dataDir, 'runs', runId);
@@ -175,6 +178,7 @@ export async function createRunExecutionContext(
   const normalizedSpeed = Number.isFinite(rawSpeed) ? Math.min(1, Math.max(0.5, rawSpeed)) : 1;
   const slowMo = normalizedSpeed < 1 ? Math.round((1 - normalizedSpeed) * 1000) : 0;
   const keepOpen = Boolean(preferences?.keepOpen);
+  const viewportSize = preferences?.viewportSize;
 
   return {
     dataDir,
@@ -187,7 +191,8 @@ export async function createRunExecutionContext(
       headed,
       speed: normalizedSpeed,
       slowMo,
-      keepOpen
+      keepOpen,
+      viewportSize
     }
   };
 }
@@ -340,7 +345,8 @@ export async function runTest(options: RunTestOptions): Promise<RunResult> {
   const context = await createRunExecutionContext(options.dataDir, options.testId, {
     headed: options.headed,
     speed: options.speed,
-    keepOpen: options.keepOpen
+    keepOpen: options.keepOpen,
+    viewportSize: options.viewportSize
   });
   const npx = await resolveNpxInvocation();
   const baseEnv = npx.env ?? process.env;
@@ -364,7 +370,11 @@ export async function runTest(options: RunTestOptions): Promise<RunResult> {
       TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
       TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
       TRAILWRIGHT_KEEP_BROWSER_OPEN: context.options.keepOpen ? 'true' : 'false',
-      ...(credentialsBlob ? { TRAILWRIGHT_CREDENTIALS_BLOB: credentialsBlob } : {})
+      ...(credentialsBlob ? { TRAILWRIGHT_CREDENTIALS_BLOB: credentialsBlob } : {}),
+      ...(context.options.viewportSize ? {
+        TRAILWRIGHT_VIEWPORT_WIDTH: String(context.options.viewportSize.width),
+        TRAILWRIGHT_VIEWPORT_HEIGHT: String(context.options.viewportSize.height)
+      } : {})
     };
 
     const proc: ChildProcessWithoutNullStreams = spawn(npx.command, args, {

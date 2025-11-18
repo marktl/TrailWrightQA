@@ -125,10 +125,10 @@ export const api = {
 
     return response.json();
   },
-  recordTest: (url?: string) =>
+  recordTest: (url?: string, viewportSize?: { width: number; height: number }) =>
     fetchApi<{ success: boolean; testId: string; message: string }>('/tests/record', {
       method: 'POST',
-      body: JSON.stringify({ url })
+      body: JSON.stringify({ url, viewportSize })
     }),
   finalizeTest: (id: string, metadata: { name?: string; description?: string; tags?: string[] }) =>
     fetchApi<{ success: boolean; test: ApiTestMetadata }>(`/tests/${id}/finalize`, {

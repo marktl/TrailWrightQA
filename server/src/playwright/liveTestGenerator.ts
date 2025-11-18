@@ -10,11 +10,12 @@ import type {
   RecordedStep,
   AIAction,
   CaptureMode,
-  ChatMessage
+  ChatMessage,
+  ViewportSize
 } from '../../../shared/types.js';
 import type { TestMetadata, CredentialRecord } from '../types.js';
 import { capturePageState, formatPageStateForAI, resetHashTracking } from './pageStateCapture.js';
-import { executeAction, createRecordedStep } from './actionExecutor.js';
+import { executeAction, createRecordedStep, generatePlaywrightCode, generateQASummary } from './actionExecutor.js';
 import { AGENT_SYSTEM_PROMPT, buildAgentPrompt, generateTestName } from '../ai/agentPrompts.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
@@ -31,6 +32,7 @@ type NormalizedGenerationOptions = {
   captureMode: CaptureMode;
   successCriteria?: string;
   keepBrowserOpen: boolean;
+  viewportSize?: ViewportSize;
 };
 
 export class LiveTestGenerator extends EventEmitter {
@@ -62,6 +64,8 @@ export class LiveTestGenerator extends EventEmitter {
   private isRunning = false;
   private nextStepNumber = 1;
   private userCorrections: string[] = [];
+  private beforeManualInterventionState?: any;
+  private pendingManualAction?: { action: AIAction; playwrightCode: string; qaSummary: string };
 
   constructor(
     options: LiveGenerationOptions,
@@ -85,7 +89,8 @@ export class LiveTestGenerator extends EventEmitter {
       maxSteps: options.maxSteps || DEFAULT_MAX_STEPS,
       captureMode: options.captureMode || 'accessibility',
       successCriteria: options.successCriteria?.trim() || undefined,
-      keepBrowserOpen: Boolean(options.keepBrowserOpen)
+      keepBrowserOpen: Boolean(options.keepBrowserOpen),
+      viewportSize: options.viewportSize
     };
 
     this.provider = provider;
@@ -145,12 +150,17 @@ export class LiveTestGenerator extends EventEmitter {
 
       // Launch browser in headed mode
       this.browser = await chromium.launch({ headless: false });
-      const context = await this.browser.newContext();
+      const contextOptions: any = {};
+      if (this.options.viewportSize) {
+        contextOptions.viewport = this.options.viewportSize;
+      }
+      const context = await this.browser.newContext(contextOptions);
       this.page = await context.newPage();
-      context.setDefaultTimeout(120000);
-      context.setDefaultNavigationTimeout(120000);
-      this.page.setDefaultTimeout(120000);
-      this.page.setDefaultNavigationTimeout(120000);
+      // Reduced timeouts for faster failure detection and user feedback
+      context.setDefaultTimeout(30000); // 30 seconds for element operations
+      context.setDefaultNavigationTimeout(60000); // 60 seconds for page loads
+      this.page.setDefaultTimeout(30000);
+      this.page.setDefaultNavigationTimeout(60000);
 
       resetHashTracking();
 
@@ -234,14 +244,17 @@ export class LiveTestGenerator extends EventEmitter {
             lastError = result.error;
             retryCount++;
 
+            // Capture screenshot of failure for debugging
+            const failureScreenshot = await this.captureFailureScreenshot(step, retryCount);
+
             if (retryCount <= maxRetries) {
               this.log(`⚠️ Action failed (attempt ${retryCount}/${maxRetries + 1}): ${result.error}`);
               this.log(`Asking AI to try a different approach...`);
-              // Loop continues with lastError passed to AI
+              // Loop continues with lastError and screenshot passed to AI
               continue;
             } else {
               // All retries exhausted - pause and ask user for help
-              await this.handleRetriesExhausted(action, result.error);
+              await this.handleRetriesExhausted(action, result.error, failureScreenshot);
               return;
             }
           }
@@ -358,15 +371,15 @@ export class LiveTestGenerator extends EventEmitter {
       prompt += `\n\nRECENT STEPS COMPLETED:\n${recentSteps}`;
     }
 
-    if (previousError) {
-      prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}\n\nThe selector or approach you just tried didn't work. Analyze the error carefully and try a DIFFERENT approach:\n- If "strict mode violation", the selector matched multiple elements - use more specific selectors with exact: true\n- If "timeout", the element may not exist or have a different accessible name\n- Review the error details and adjust your selector accordingly\n- DO NOT repeat the same selector that just failed`;
-    }
-
+    // User corrections take priority over error context
     if (this.userCorrections.length > 0) {
       const corrections = this.userCorrections
         .map((correction, index) => `${index + 1}. ${correction}`)
         .join('\n');
-      prompt += `\n\n⚠️ IMMEDIATE USER CORRECTIONS (handle next, then return to original goal):\n${corrections}\n\nIMPORTANT: After addressing the correction above, CONTINUE pursuing the original goal: "${this.options.goal}"`;
+      prompt += `\n\n🚨 CRITICAL USER INSTRUCTIONS - FOLLOW IMMEDIATELY:\n${corrections}\n\n>>> YOUR VERY NEXT ACTION MUST ADDRESS THE USER INSTRUCTION ABOVE <<<\n>>> DO NOT attempt any other actions until the user instruction is completed <<<\n>>> If the instruction says "click register", your next action MUST be clicking register <<<\n>>> User instructions override any previous errors - try the action the user requested <<<\n\nAfter completing the user instruction, CONTINUE pursuing the original goal: "${this.options.goal}"`;
+    } else if (previousError) {
+      // Only show error context if there are no user corrections
+      prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}\n\nThe selector or approach you just tried didn't work. Analyze the error carefully and try a DIFFERENT approach:\n- If "strict mode violation", the selector matched multiple elements - use more specific selectors with exact: true\n- If "timeout", the element may not exist or have a different accessible name\n- Review the error details and adjust your selector accordingly\n- DO NOT repeat the same selector that just failed`;
     }
 
     return prompt;
@@ -534,12 +547,89 @@ export class LiveTestGenerator extends EventEmitter {
       throw new Error('Generation must be paused or stopped before sending feedback');
     }
 
-    // Add user message to chat
+    // Add user message to chat AND log (always)
     this.addChatMessage('user', trimmed);
-
-    // Add to corrections for AI context
-    this.userCorrections.push(trimmed);
     this.log(`User: ${trimmed}`);
+
+    // Check if user is indicating they manually performed the action
+    const isDoneIndicator = /^(done|completed|finished|did it)$/i.test(trimmed);
+
+    if (isDoneIndicator && this.beforeManualInterventionState) {
+      // User manually performed the action - infer what they did
+      this.log('Analyzing what you did...');
+
+      const inference = await this.inferUserAction();
+
+      if (inference) {
+        const { action, confidence } = inference;
+
+        // Generate Playwright code for the inferred action
+        const playwrightCode = generatePlaywrightCode(action);
+        const qaSummary = generateQASummary(action);
+
+        // Ask user to confirm
+        const confirmMessage = `I observed that you ${qaSummary.toLowerCase()}.\n\nGenerated code:\n\`\`\`typescript\n${playwrightCode}\n\`\`\`\n\nIs this correct? Reply "yes" to record this step and continue, or describe what actually happened.`;
+        this.addChatMessage('assistant', confirmMessage);
+
+        // Store the pending action for confirmation
+        this.pendingManualAction = { action, playwrightCode, qaSummary };
+
+        this.touch();
+        return;
+      } else {
+        this.addChatMessage(
+          'assistant',
+          'I couldn\'t detect what changed. Could you describe what you did? For example: "I filled the SSN confirmation field with 123-45-6789"'
+        );
+        this.touch();
+        return;
+      }
+    }
+
+    // Check if user is confirming the inferred action
+    const isConfirmation = /^(yes|correct|that's right|looks good)$/i.test(trimmed);
+
+    if (isConfirmation && this.pendingManualAction) {
+      // Record the step
+      const { action, qaSummary } = this.pendingManualAction;
+      const step = this.nextStepNumber;
+
+      const screenshot = await this.captureStepScreenshot(step);
+      const recorded = createRecordedStep(step, action, {
+        url: this.currentUrl,
+        screenshotPath: screenshot?.path,
+        screenshotData: screenshot?.data
+      });
+
+      this.recordedSteps.push(recorded);
+      this.nextStepNumber = this.recordedSteps.length + 1;
+
+      this.emit('event', {
+        type: 'step_recorded',
+        timestamp: new Date().toISOString(),
+        payload: recorded
+      });
+
+      this.log(`${step}. ${recorded.qaSummary} (manually performed)`);
+
+      // Clear state
+      this.beforeManualInterventionState = undefined;
+      this.pendingManualAction = undefined;
+
+      // Add success message and continue
+      this.addChatMessage('assistant', 'Step recorded! Continuing automation...');
+
+      // Reset hash tracking to force fresh page state capture
+      resetHashTracking();
+
+      this.updateStatus('running');
+      void this.runAgentLoop();
+      this.touch();
+      return;
+    }
+
+    // Regular feedback - add to corrections for AI context
+    this.userCorrections.push(trimmed);
 
     // If completed/stopped/failed, re-initialize browser and continue
     if (this.status === 'completed' || this.status === 'stopped' || this.status === 'failed') {
@@ -548,12 +638,16 @@ export class LiveTestGenerator extends EventEmitter {
       // Re-open browser if closed
       if (!this.browser || !this.page) {
         this.browser = await chromium.launch({ headless: false });
-        const context = await this.browser.newContext();
+        const contextOptions: any = {};
+        if (this.options.viewportSize) {
+          contextOptions.viewport = this.options.viewportSize;
+        }
+        const context = await this.browser.newContext(contextOptions);
         this.page = await context.newPage();
-        context.setDefaultTimeout(120000);
-        context.setDefaultNavigationTimeout(120000);
-        this.page.setDefaultTimeout(120000);
-        this.page.setDefaultNavigationTimeout(120000);
+        context.setDefaultTimeout(30000);
+        context.setDefaultNavigationTimeout(60000);
+        this.page.setDefaultTimeout(30000);
+        this.page.setDefaultNavigationTimeout(60000);
 
         // Navigate to current URL or start URL
         const targetUrl = this.currentUrl || this.options.startUrl;
@@ -753,6 +847,35 @@ ${stepCode}
     }
   }
 
+  private async captureFailureScreenshot(
+    stepNumber: number,
+    retryNumber: number
+  ): Promise<string | undefined> {
+    if (!this.page || !this.storageReady) {
+      return undefined;
+    }
+
+    const paddedStep = String(stepNumber).padStart(3, '0');
+    const uniqueId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const filename = `failure-step-${paddedStep}-retry-${retryNumber}-${uniqueId}.png`;
+    const filePath = path.join(this.screenshotDir, filename);
+
+    try {
+      const buffer = await this.page.screenshot({
+        path: filePath,
+        fullPage: true // Always full page for failure analysis
+      });
+
+      return buffer.toString('base64');
+    } catch (error) {
+      console.error(
+        `[generator] Failed to capture failure screenshot for session ${this.sessionId} step ${stepNumber} retry ${retryNumber}`,
+        error
+      );
+      return undefined;
+    }
+  }
+
   private async deleteScreenshotAsset(step: RecordedStep | undefined): Promise<void> {
     if (!step?.screenshotPath) {
       return;
@@ -850,29 +973,35 @@ ${stepCode}
     this.updateStatus('paused');
   }
 
-  private async handleRetriesExhausted(failedAction: AIAction, error: string): Promise<void> {
+  private async handleRetriesExhausted(failedAction: AIAction, error: string, screenshot?: string): Promise<void> {
     this.log(`❌ Action failed after 3 attempts: ${error}`);
-    this.log(`Browser left open for inspection.`);
+    this.log(`Browser left open for manual intervention.`);
 
-    // Generate AI summary of what was tried
-    const summary = await this.generateErrorSummary(failedAction, error);
+    // Capture "before" state for comparison after user acts
+    const beforeState = this.page ? await this.capturePageStateSnapshot() : undefined;
+
+    // Store for later comparison
+    this.beforeManualInterventionState = beforeState;
+
+    // Generate AI summary of what was tried (with visual context if available)
+    const summary = await this.generateErrorSummary(failedAction, error, screenshot);
 
     this.isPaused = true;
     this.isRunning = false;
     this.updateStatus('paused');
 
-    // Add AI message with summary and request for help
-    const helpMessage = `I tried multiple approaches but couldn't complete this action:\n\n${summary}\n\nPlease review the browser window and provide guidance on how to proceed, or use the restart button to try a different approach.`;
+    // Add AI message with manual intervention request
+    const helpMessage = `I tried multiple approaches but couldn't complete this action:\n\n${summary}\n\n**What you can do:**\n1. Manually perform the action in the visible browser window\n2. Once you've completed the action, type "done" and I'll observe what you did\n3. I'll generate the test code for your action and ask you to confirm\n4. Then we'll continue with the rest of the test\n\nOr, provide specific guidance on which selector to use, or use the restart button.`;
     this.addChatMessage('assistant', helpMessage);
   }
 
-  private async generateErrorSummary(action: AIAction, error: string): Promise<string> {
+  private async generateErrorSummary(action: AIAction, error: string, screenshot?: string): Promise<string> {
     const recentSteps = this.recordedSteps
       .slice(-3)
       .map((step) => `- ${step.qaSummary}`)
       .join('\n');
 
-    const prompt = `You encountered an error while automating a web page. Provide a brief, helpful summary for the user.
+    const textPrompt = `You encountered an error while automating a web page. Provide a brief, helpful summary for the user.
 
 Goal: ${this.options.goal}
 Recent steps completed:
@@ -881,10 +1010,12 @@ ${recentSteps || 'None yet'}
 Last attempted action: ${action.action} ${action.selector || ''} ${action.value || ''}
 Error: ${error}
 
+${screenshot ? 'A screenshot of the page at the time of failure is provided. Analyze it to understand what elements are visible and suggest the correct selector.' : ''}
+
 Provide a 2-3 sentence summary explaining:
 1. What you were trying to do
 2. Why it failed (in simple terms)
-3. What might help (e.g., "The field label might be different" or "The element might not be visible yet")
+3. What might help (e.g., "The field label might be different", specific selector to try, or "The element might not be visible yet")
 
 Keep it non-technical and actionable. Do not use markdown.`;
 
@@ -893,39 +1024,63 @@ Keep it non-technical and actionable. Do not use markdown.`;
       switch (this.provider) {
         case 'anthropic': {
           const client = new Anthropic({ apiKey: this.apiKey });
+          const content: Anthropic.MessageParam['content'] = screenshot
+            ? [
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshot } },
+                { type: 'text', text: textPrompt }
+              ]
+            : textPrompt;
+
           const message = await client.messages.create({
             model: 'claude-3-5-sonnet-20241022',
-            max_tokens: 200,
-            messages: [{ role: 'user', content: prompt }]
+            max_tokens: 300,
+            messages: [{ role: 'user', content }]
           });
-          const content = message.content[0];
-          if (content.type === 'text') {
-            summary = content.text;
+          const responseContent = message.content[0];
+          if (responseContent.type === 'text') {
+            summary = responseContent.text;
           }
           break;
         }
         case 'openai': {
           const client = new OpenAI({ apiKey: this.apiKey });
+          const messages: OpenAI.Chat.ChatCompletionMessageParam[] = screenshot
+            ? [
+                {
+                  role: 'user',
+                  content: [
+                    { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot}` } },
+                    { type: 'text', text: textPrompt }
+                  ]
+                }
+              ]
+            : [{ role: 'user', content: textPrompt }];
+
           const completion = await client.chat.completions.create({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: prompt }],
-            max_tokens: 200
+            model: 'gpt-4o',
+            messages,
+            max_tokens: 300
           });
           summary = completion.choices[0]?.message?.content || '';
           break;
         }
         case 'gemini': {
           const genAI = new GoogleGenAI({ apiKey: this.apiKey });
+          const parts = screenshot
+            ? [{ inlineData: { mimeType: 'image/png', data: screenshot } }, { text: textPrompt }]
+            : textPrompt;
+
           const result = await genAI.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: prompt
+            contents: parts
           });
           summary = result.text || '';
           break;
         }
       }
       return summary.trim() || `I attempted to ${action.reasoning || action.action} but encountered: ${error}`;
-    } catch {
+    } catch (err) {
+      console.error('[generator] Failed to generate error summary:', err);
       return `I attempted to ${action.reasoning || action.action} but encountered: ${error}`;
     }
   }
@@ -950,6 +1105,135 @@ Keep it non-technical and actionable. Do not use markdown.`;
       payload: { message }
     });
     void this.finalize();
+  }
+
+  private async capturePageStateSnapshot(): Promise<any> {
+    if (!this.page) return null;
+
+    try {
+      return await this.page.evaluate(() => {
+        // Capture form values, URL, and key page elements
+        const formData: Record<string, any> = {};
+        document.querySelectorAll('input, textarea, select').forEach((el: any) => {
+          const id = el.id || el.name || el.className;
+          if (id) {
+            formData[id] = el.value || el.checked || el.selectedOptions?.[0]?.text;
+          }
+        });
+
+        return {
+          url: window.location.href,
+          title: document.title,
+          formData,
+          visibleText: document.body.innerText.slice(0, 5000) // First 5000 chars
+        };
+      });
+    } catch (error) {
+      console.error('[generator] Failed to capture page snapshot:', error);
+      return null;
+    }
+  }
+
+  private async inferUserAction(): Promise<{ action: AIAction; confidence: string } | null> {
+    if (!this.page || !this.beforeManualInterventionState) {
+      return null;
+    }
+
+    const afterState = await this.capturePageStateSnapshot();
+    if (!afterState) return null;
+
+    const before = this.beforeManualInterventionState;
+    const after = afterState;
+
+    // Detect changes
+    const changes: string[] = [];
+
+    if (before.url !== after.url) {
+      changes.push(`URL changed from "${before.url}" to "${after.url}"`);
+    }
+
+    // Check form data changes
+    const allKeys = new Set([...Object.keys(before.formData || {}), ...Object.keys(after.formData || {})]);
+    for (const key of allKeys) {
+      const beforeVal = before.formData?.[key];
+      const afterVal = after.formData?.[key];
+      if (beforeVal !== afterVal) {
+        changes.push(`Field "${key}" changed from "${beforeVal}" to "${afterVal}"`);
+      }
+    }
+
+    if (changes.length === 0) {
+      return null;
+    }
+
+    // Use AI to infer the action
+    const prompt = `A user manually performed an action in a browser. Based on the observed changes, infer what Playwright action they performed.
+
+URL before: ${before.url}
+URL after: ${after.url}
+
+Changes detected:
+${changes.join('\n')}
+
+Provide a JSON response with the most likely action:
+{
+  "action": "click" | "fill" | "select" | "goto",
+  "selector": "best Playwright selector for the element",
+  "value": "value if fill/select, otherwise empty",
+  "reasoning": "brief explanation of what you think happened",
+  "confidence": "high" | "medium" | "low"
+}`;
+
+    try {
+      let responseText = '';
+      switch (this.provider) {
+        case 'anthropic': {
+          const client = new Anthropic({ apiKey: this.apiKey });
+          const message = await client.messages.create({
+            model: 'claude-3-5-sonnet-20241022',
+            max_tokens: 500,
+            messages: [{ role: 'user', content: prompt }]
+          });
+          const content = message.content[0];
+          if (content.type === 'text') {
+            responseText = content.text;
+          }
+          break;
+        }
+        case 'openai': {
+          const client = new OpenAI({ apiKey: this.apiKey });
+          const completion = await client.chat.completions.create({
+            model: 'gpt-4o',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 500,
+            response_format: { type: 'json_object' }
+          });
+          responseText = completion.choices[0]?.message?.content || '';
+          break;
+        }
+        case 'gemini': {
+          const genAI = new GoogleGenAI({ apiKey: this.apiKey });
+          const result = await genAI.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: { responseMimeType: 'application/json' }
+          });
+          responseText = result.text || '';
+          break;
+        }
+      }
+
+      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const inference = JSON.parse(cleaned);
+
+      return {
+        action: inference as AIAction,
+        confidence: inference.confidence || 'medium'
+      };
+    } catch (error) {
+      console.error('[generator] Failed to infer user action:', error);
+      return null;
+    }
   }
 
   private touch(): void {

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { ApiCredential } from '../api/client';
+import { SCREEN_SIZE_PRESETS } from '../constants/screenSizes';
 
 export default function GenerateStart() {
   const navigate = useNavigate();
@@ -25,6 +26,7 @@ export default function GenerateStart() {
   const [showCredentialForm, setShowCredentialForm] = useState(false);
   const [savingCredential, setSavingCredential] = useState(false);
   const [credentialError, setCredentialError] = useState<string | null>(null);
+  const [selectedScreenSize, setSelectedScreenSize] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -79,13 +81,18 @@ export default function GenerateStart() {
     setMessage(null);
 
     try {
+      const viewportSize = selectedScreenSize
+        ? SCREEN_SIZE_PRESETS.find((p) => p.id === selectedScreenSize)?.viewport
+        : undefined;
+
       const { sessionId } = await api.startGeneration({
         startUrl: trimmedUrl,
         goal: trimmedGoal,
         successCriteria: successCriteria.trim() || undefined,
         maxSteps: parsedSteps,
         keepBrowserOpen,
-        credentialId: selectedCredentialId || undefined
+        credentialId: selectedCredentialId || undefined,
+        viewportSize
       });
       navigate(`/generate/${sessionId}`);
     } catch (err) {
@@ -263,6 +270,25 @@ export default function GenerateStart() {
             <p className="mt-1 text-xs text-gray-500">Default is 20. Increase for longer flows.</p>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Screen Size (optional)</label>
+            <select
+              value={selectedScreenSize}
+              onChange={(e) => setSelectedScreenSize(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Default (Browser default)</option>
+              {SCREEN_SIZE_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Test against specific viewport sizes like mobile, tablet, or desktop.
+            </p>
+          </div>
+
           <label className="flex items-start gap-3 rounded-lg border border-gray-200 px-3 py-3">
             <input
               type="checkbox"
@@ -290,6 +316,7 @@ export default function GenerateStart() {
                 setGoal('');
                 setSuccessCriteria('');
                 setMaxSteps('20');
+                setSelectedScreenSize('');
                 setKeepBrowserOpen(false);
                 setMessage(null);
               }}

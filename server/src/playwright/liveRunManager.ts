@@ -400,7 +400,7 @@ export class LiveRunSession {
 export async function startLiveRun(
   dataDir: string,
   testId: string,
-  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean }
+  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean; viewportSize?: { width: number; height: number } }
 ): Promise<LiveRunSession> {
   const context = await createRunExecutionContext(dataDir, testId, preferences);
   const npx = await resolveNpxInvocation();
@@ -424,7 +424,11 @@ export async function startLiveRun(
     TRAILWRIGHT_HEADLESS: context.options.headed ? 'false' : 'true',
     TRAILWRIGHT_SLOWMO: String(context.options.slowMo),
     PLAYWRIGHT_JUNIT_OUTPUT_NAME: `trailwright-${context.runId}.xml`,
-    ...(credentialsBlob ? { TRAILWRIGHT_CREDENTIALS_BLOB: credentialsBlob } : {})
+    ...(credentialsBlob ? { TRAILWRIGHT_CREDENTIALS_BLOB: credentialsBlob } : {}),
+    ...(context.options.viewportSize ? {
+      TRAILWRIGHT_VIEWPORT_WIDTH: String(context.options.viewportSize.width),
+      TRAILWRIGHT_VIEWPORT_HEIGHT: String(context.options.viewportSize.height)
+    } : {})
   };
 
   const proc = spawn(npx.command, args, {

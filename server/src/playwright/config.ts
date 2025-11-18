@@ -15,13 +15,26 @@ const config = {
   use: (() => {
     const headless = process.env.TRAILWRIGHT_HEADLESS === 'true';
     const slowMo = Number.parseInt(process.env.TRAILWRIGHT_SLOWMO ?? '0', 10) || 0;
-    return {
+    const viewportWidth = process.env.TRAILWRIGHT_VIEWPORT_WIDTH;
+    const viewportHeight = process.env.TRAILWRIGHT_VIEWPORT_HEIGHT;
+
+    const config = {
       headless,
       slowMo,
       trace: 'retain-on-failure',
       screenshot: 'on', // Capture screenshots for every run (supports reporting/export)
       video: 'retain-on-failure', // Retain videos only when failures occur to control storage
     };
+
+    // Apply viewport size if specified
+    if (viewportWidth && viewportHeight) {
+      config.viewport = {
+        width: Number.parseInt(viewportWidth, 10),
+        height: Number.parseInt(viewportHeight, 10)
+      };
+    }
+
+    return config;
   })(),
   reporter: [
     ['list', { printSteps: true }],

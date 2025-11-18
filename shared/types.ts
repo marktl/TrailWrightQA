@@ -88,10 +88,17 @@ export interface ChatMessage {
   timestamp: string;
 }
 
+// Common screen sizes for testing
+export interface ViewportSize {
+  width: number;
+  height: number;
+}
+
 export interface RunOptionSettings {
   headed: boolean;
   speed: number;
   keepOpen?: boolean;
+  viewportSize?: ViewportSize;
 }
 
 export interface LiveRunState {
@@ -138,6 +145,7 @@ export interface LiveGenerationOptions {
   captureMode?: CaptureMode;
   keepBrowserOpen?: boolean;
   credentialId?: string;
+  viewportSize?: ViewportSize;
 }
 
 export type GenerationStatus =

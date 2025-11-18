@@ -233,7 +233,7 @@ router.get('/:id/export', async (req, res) => {
 // Launch Playwright codegen to record a new test
 router.post('/record', async (req, res) => {
   try {
-    const { url } = req.body;
+    const { url, viewportSize } = req.body;
     const config = await loadConfig(CONFIG.DATA_DIR);
     const startUrl = url || config.baseUrl || 'about:blank';
 
@@ -258,18 +258,26 @@ test('recorded test', async ({ page }) => {
 
     console.log(`[codegen] Launching Playwright codegen at ${startUrl}, output to ${testFileName}`);
 
+    // Build codegen args
+    const codegenArgs = [
+      ...npx.argsPrefix,
+      'playwright',
+      'codegen',
+      startUrl,
+      '--target=typescript',
+      '--output',
+      testFilePath
+    ];
+
+    // Add viewport size if specified
+    if (viewportSize && typeof viewportSize === 'object' && viewportSize.width && viewportSize.height) {
+      codegenArgs.push('--viewport-size', `${viewportSize.width},${viewportSize.height}`);
+    }
+
     // Launch codegen with --output to save directly to file
     spawn(
       npx.command,
-      [
-        ...npx.argsPrefix,
-        'playwright',
-        'codegen',
-        startUrl,
-        '--target=typescript',
-        '--output',
-        testFilePath
-      ],
+      codegenArgs,
       {
         cwd: CONFIG.DATA_DIR,
         env: { ...baseEnv },

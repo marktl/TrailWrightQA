@@ -58,10 +58,18 @@ router.post('/', async (req, res) => {
           ? req.body.keepBrowserOpen.toLowerCase() !== 'false'
           : false;
 
+    const viewportSize = req.body.viewportSize && typeof req.body.viewportSize === 'object'
+      ? {
+          width: Number.parseInt(req.body.viewportSize.width, 10),
+          height: Number.parseInt(req.body.viewportSize.height, 10)
+        }
+      : undefined;
+
     const session = await startLiveRun(CONFIG.DATA_DIR, testId, {
       headed: headedPreference,
       speed: speedPreference,
-      keepOpen: keepBrowserOpen
+      keepOpen: keepBrowserOpen,
+      viewportSize
     });
     return res.status(202).json({ runId: session.id });
   } catch (err: any) {

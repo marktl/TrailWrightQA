@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { ApiTestMetadata, ApiCredential } from '../api/client';
@@ -23,6 +23,7 @@ export default function GenerationViewer() {
   const [isPausing, setIsPausing] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const chatRef = useRef<HTMLDivElement>(null);
   const [deletingStepNumber, setDeletingStepNumber] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
@@ -235,6 +236,12 @@ export default function GenerationViewer() {
       setSessionConfigSuccessCriteria(state.successCriteria || '');
     }
   }, [sessionConfigEditing, state?.goal, state?.maxSteps, state?.startUrl, state?.successCriteria]);
+
+  useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    }
+  }, [state?.chat]);
 
   async function handlePause() {
     if (!sessionId || isPausing) return;
@@ -978,7 +985,7 @@ export default function GenerationViewer() {
           </div>
 
           {/* Chat Messages */}
-          <div className="mb-4 space-y-3 max-h-[360px] overflow-y-auto pr-1">
+          <div ref={chatRef} className="mb-4 space-y-3 max-h-[360px] overflow-y-auto pr-1">
             {state?.chat && state.chat.length > 0 ? (
               state.chat.map((msg) => (
                 <div
