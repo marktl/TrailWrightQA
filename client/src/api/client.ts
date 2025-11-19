@@ -173,7 +173,15 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(metadata)
     }),
-  runTest: (testId: string, options?: { headed?: boolean; speed?: number; keepBrowserOpen?: boolean }) =>
+  runTest: (
+    testId: string,
+    options?: {
+      headed?: boolean;
+      speed?: number;
+      keepBrowserOpen?: boolean;
+      viewportSize?: { width: number; height: number };
+    }
+  ) =>
     fetchApi<{ runId: string }>('/runs', {
       method: 'POST',
       body: JSON.stringify({ testId, ...(options ?? {}) })
@@ -315,6 +323,10 @@ export const api = {
     fetchApi<{ suggestedName: string }>(`/generate/${sessionId}/suggest-name`, {
       method: 'POST'
     }),
+  getSuggestedTestTags: (sessionId: string) =>
+    fetchApi<{ suggestedTags: string[] }>(`/generate/${sessionId}/suggest-tags`, {
+      method: 'POST'
+    }),
   saveGeneratedTest: (
     sessionId: string,
     metadata: {
@@ -352,6 +364,41 @@ export const api = {
       variables: Array<{ name: string; type: string; sampleValue?: string }>;
     }>(`/generate/${sessionId}/variables/${varName}`, {
       method: 'DELETE'
+    }),
+
+  // Test variable data management
+  getTestVariables: (testId: string) =>
+    fetchApi<{
+      variables: Array<{ name: string; type?: string; sampleValue?: string }>;
+      data: Array<Record<string, string>>;
+    }>(`/tests/${testId}/variables`),
+
+  updateTestVariables: (testId: string, update: { data: Array<Record<string, string>> }) =>
+    fetchApi<{ success: boolean }>(`/tests/${testId}/variables`, {
+      method: 'PUT',
+      body: JSON.stringify(update)
+    }),
+
+  exportTestVariables: async (testId: string): Promise<string> => {
+    const response = await fetch(`${API_BASE}/tests/${testId}/variables/export`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Export failed' }));
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+    return response.text();
+  },
+
+  importTestVariables: (
+    testId: string,
+    importData: {
+      csvContent: string;
+      mapping: Record<string, string | null>;
+      mode: 'replace' | 'append' | 'merge';
+    }
+  ) =>
+    fetchApi<{ success: boolean }>(`/tests/${testId}/variables/import`, {
+      method: 'POST',
+      body: JSON.stringify(importData)
     }),
 
   connectToGenerationEvents: (

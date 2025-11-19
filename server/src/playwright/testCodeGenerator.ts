@@ -93,7 +93,7 @@ ${stepCode}
   }
 
   /**
-   * Generate parameterized test using test.describe.each()
+   * Generate parameterized test using for...of loop
    */
   private generateParameterizedTest(
     testId: string,
@@ -120,7 +120,7 @@ ${stepCode}
     return `
 ${dataPath}
 
-test.describe.each(testData)('${this.escapeString(testName)}', (row) => {
+for (const row of testData) {
   test(\`${titleInterpolation}\`, async ({ page }) => {
     // Navigate to starting URL
     await page.goto(${startUrlLiteral});
@@ -129,7 +129,7 @@ ${stepComments}
 
 ${stepCode}
   });
-});`;
+}`;
   }
 
   /**

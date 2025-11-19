@@ -13,6 +13,7 @@ import { LiveTestGenerator } from '../playwright/liveTestGenerator.js';
 import { loadConfig } from '../storage/config.js';
 import { saveTest } from '../storage/tests.js';
 import { getCredentialById } from '../storage/credentials.js';
+import { VariableStorage } from '../storage/variables.js';
 import { CONFIG } from '../config.js';
 
 const router = express.Router();
@@ -65,6 +66,16 @@ async function persistGeneratorTest(
   const testId = options.id || existing?.id || `ai-${generator.id}`;
   const testName = options.name?.trim() || existing?.name || formatAutoTestName(state.goal);
 
+  // Get variables from generator if not provided in options
+  const generatorVariables = generator.getVariables();
+  const variables = options.variables || (generatorVariables.length > 0
+    ? generatorVariables.map(v => ({
+        name: v.name,
+        type: v.type as 'string' | 'number',
+        sampleValue: v.sampleValue
+      }))
+    : undefined);
+
   const metadata: TestMetadata = {
     id: testId,
     name: testName,
@@ -82,8 +93,8 @@ async function persistGeneratorTest(
       qaSummary: step.qaSummary,
       playwrightCode: step.playwrightCode
     })),
-    variables: options.variables,
-    dataSource: options.dataSource,
+    variables,
+    dataSource: variables ? `${testId}.csv` : options.dataSource,
     createdAt: existing?.createdAt || now,
     updatedAt: now
   };
@@ -93,7 +104,7 @@ async function persistGeneratorTest(
     code: generator.generateTestCode({
       testId,
       testName,
-      variables: options.variables,
+      variables,
       metadata: {
         description: metadata.description,
         tags: metadata.tags,
@@ -105,6 +116,19 @@ async function persistGeneratorTest(
   };
 
   await saveTest(CONFIG.DATA_DIR, test);
+
+  // Create CSV file with sample data if variables are present
+  if (variables && variables.length > 0) {
+    const variableStorage = new VariableStorage(CONFIG.DATA_DIR);
+    const sampleRow: Record<string, string> = {};
+
+    for (const variable of variables) {
+      sampleRow[variable.name] = variable.sampleValue || '';
+    }
+
+    await variableStorage.writeVariables(testId, [sampleRow]);
+  }
+
   persistedSessions.set(generator.id, metadata);
   generator.markTestPersisted(metadata);
   return metadata;
@@ -656,6 +680,22 @@ router.post('/:sessionId/suggest-name', async (req, res) => {
   }
 });
 
+router.post('/:sessionId/suggest-tags', async (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    const suggestedTags = await generator.suggestTestTags();
+    res.json({ suggestedTags });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to suggest test tags' });
+  }
+});
+
 /**
  * Save the generated test
  */
@@ -671,7 +711,7 @@ router.post('/:sessionId/save', async (req, res) => {
 
   const state = generator.getState();
 
-  const terminalStatuses: GenerationStatus[] = ['completed', 'failed', 'stopped'];
+  const terminalStatuses: GenerationStatus[] = ['completed', 'failed', 'stopped', 'paused'];
   const manualReady = generator.isManualMode() && state.status === 'awaiting_input';
 
   if (!terminalStatuses.includes(state.status) && !manualReady) {

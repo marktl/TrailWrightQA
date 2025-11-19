@@ -19,7 +19,7 @@ import type {
 import type { TestMetadata, CredentialRecord } from '../types.js';
 import { capturePageState, formatPageStateForAI, resetHashTracking } from './pageStateCapture.js';
 import { executeAction, createRecordedStep, generatePlaywrightCode, generateQASummary } from './actionExecutor.js';
-import { AGENT_SYSTEM_PROMPT, STEP_PLANNER_SYSTEM_PROMPT, buildAgentPrompt, buildStepPlannerPrompt, generateTestName } from '../ai/agentPrompts.js';
+import { AGENT_SYSTEM_PROMPT, STEP_PLANNER_SYSTEM_PROMPT, buildAgentPrompt, buildStepPlannerPrompt, generateTestName, generateTestTags } from '../ai/agentPrompts.js';
 import { TestCodeGenerator } from './testCodeGenerator.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
@@ -848,6 +848,22 @@ export class LiveTestGenerator extends EventEmitter {
     return generateTestName(this.options.goal, summaries, this.provider, this.apiKey, this.baseUrl);
   }
 
+  async suggestTestTags(): Promise<string[]> {
+    if (!this.recordedSteps.length) {
+      throw new Error('No recorded steps available for tagging');
+    }
+
+    const summaries = this.recordedSteps.map((step) => step.qaSummary);
+    return generateTestTags(
+      this.options.goal,
+      summaries,
+      this.options.startUrl,
+      this.provider,
+      this.apiKey,
+      this.baseUrl
+    );
+  }
+
   /**
    * Stop the generation
    */
@@ -1016,11 +1032,20 @@ export class LiveTestGenerator extends EventEmitter {
       const planResponse = JSON.parse(cleaned);
 
       if (!planResponse.canExecute) {
-        // AI needs clarification
+        // AI needs clarification - this is normal workflow, not an error
         const clarificationMessage = planResponse.clarificationMessage || 'I cannot execute this instruction. Please provide more details.';
         this.addChatMessage('assistant', clarificationMessage);
         this.enterManualAwaitingState();
-        throw new Error(clarificationMessage);
+        // Return a non-executable plan instead of throwing
+        const clarificationPlan: StepPlan = {
+          id: `plan-clarification-${Date.now()}`,
+          originalInstruction: trimmed,
+          steps: [],
+          canExecute: false,
+          clarificationMessage,
+          timestamp: new Date().toISOString()
+        };
+        return clarificationPlan;
       }
 
       // Create plan with unique IDs
@@ -1055,8 +1080,23 @@ export class LiveTestGenerator extends EventEmitter {
       this.enterManualAwaitingState();
       return plan;
     } catch (error: any) {
+      // Log the actual error for debugging
+      this.log(`Error creating plan: ${error.message}`);
+
+      // Add a user-friendly message to chat instead of throwing
+      this.addChatMessage('assistant', 'I encountered an issue analyzing the page. Please try rephrasing your instruction or describe what you see on the page.');
       this.enterManualAwaitingState();
-      throw new Error(`Failed to create plan: ${error.message}`);
+
+      // Return a non-executable plan instead of throwing
+      const errorPlan: StepPlan = {
+        id: `plan-error-${Date.now()}`,
+        originalInstruction: instruction,
+        steps: [],
+        canExecute: false,
+        clarificationMessage: 'Failed to analyze the page. Please try again with a different instruction.',
+        timestamp: new Date().toISOString()
+      };
+      return errorPlan;
     }
   }
 
@@ -1105,17 +1145,43 @@ export class LiveTestGenerator extends EventEmitter {
       // Execute the action
       const result = await executeAction(this.page, action);
 
+      // Capture screenshot regardless of success/failure for debugging
+      await this.page.waitForTimeout(500);
+      const screenshot = await this.captureStepScreenshot(stepNumber);
+
       if (!result.success) {
-        // Step failed
+        // Step failed - still record it with error info
         this.log(`❌ Step failed: ${result.error}`);
+
+        // Create a failed step record
+        const failedRecord = createRecordedStep(stepNumber, action, {
+          url: this.currentUrl,
+          screenshotPath: screenshot?.path,
+          screenshotData: screenshot?.data
+        });
+
+        // Inject placeholders back if using variables
+        if (this.variables.size > 0) {
+          failedRecord.playwrightCode = this.injectPlaceholdersIntoCode(failedRecord.playwrightCode);
+        }
+
+        this.recordedSteps.push(failedRecord);
+        this.nextStepNumber = this.recordedSteps.length + 1;
+
+        this.emit('event', {
+          type: 'step_recorded',
+          timestamp: new Date().toISOString(),
+          payload: failedRecord
+        });
+
+        // Add chat message about failure
         this.addChatMessage('assistant', `Step "${plannedStep.description}" failed: ${result.error}\n\nPlease provide a new instruction or adjust your approach.`);
         this.enterManualAwaitingState();
+        this.touch();
         return;
       }
 
       // Step succeeded - record it
-      await this.page.waitForTimeout(500);
-      const screenshot = await this.captureStepScreenshot(stepNumber);
 
       const recorded = createRecordedStep(stepNumber, action, {
         url: this.currentUrl,

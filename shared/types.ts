@@ -137,7 +137,7 @@ export interface LiveRunState {
 
 // Live AI Test Generation Types
 
-export type AIActionType = 'goto' | 'click' | 'fill' | 'select' | 'press' | 'wait' | 'done';
+export type AIActionType = 'goto' | 'click' | 'fill' | 'select' | 'press' | 'wait' | 'expectVisible' | 'expectText' | 'expectValue' | 'expectUrl' | 'expectTitle' | 'screenshot' | 'done';
 
 export interface AIAction {
   action: AIActionType;

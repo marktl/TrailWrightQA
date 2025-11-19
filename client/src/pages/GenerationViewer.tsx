@@ -720,18 +720,28 @@ export default function GenerationViewer() {
     setSaveModalError(null);
 
     let suggestedName = savedTest?.name || steps[0]?.qaSummary || 'AI Generated Test';
+    let suggestedTags = savedTest?.tags ?? ['ai-generated', 'live-session'];
 
     try {
       if (!savedTest && steps.length > 0) {
-        const { suggestedName: aiSuggestedName } = await api.getSuggestedTestName(sessionId);
-        if (aiSuggestedName?.trim()) {
-          suggestedName = aiSuggestedName.trim();
+        // Fetch both name and tags suggestions in parallel
+        const [nameResult, tagsResult] = await Promise.allSettled([
+          api.getSuggestedTestName(sessionId),
+          api.getSuggestedTestTags(sessionId)
+        ]);
+
+        if (nameResult.status === 'fulfilled' && nameResult.value?.suggestedName?.trim()) {
+          suggestedName = nameResult.value.suggestedName.trim();
+        }
+
+        if (tagsResult.status === 'fulfilled' && tagsResult.value?.suggestedTags?.length) {
+          suggestedTags = tagsResult.value.suggestedTags;
         }
       }
       setSaveForm({
         name: suggestedName,
         description: savedTest?.description || state?.goal || '',
-        tagsInput: (savedTest?.tags ?? ['ai-generated', 'live-session']).join(', '),
+        tagsInput: suggestedTags.join(', '),
         folder: savedTest?.folder || '',
         credentialId: savedTest?.credentialId || state?.credentialId || ''
       });
@@ -744,7 +754,7 @@ export default function GenerationViewer() {
     }
   }
 
-  async function submitSaveForm() {
+  async function submitSaveForm(returnToDashboard: boolean = false) {
     if (!sessionId) return;
     const trimmedName = saveForm.name.trim();
     if (!trimmedName) {
@@ -774,6 +784,10 @@ export default function GenerationViewer() {
       setAutoSaveNotice(`Saved as "${test.name}"`);
       setSaveModalOpen(false);
       setTimeout(() => setAutoSaveNotice(null), 5000);
+
+      if (returnToDashboard) {
+        navigate('/');
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save test';
       setSaveModalError(message);
@@ -1195,39 +1209,24 @@ export default function GenerationViewer() {
             </div>
           )}
 
-          {/* Variable Panel - Only show in manual mode */}
+          {/* Auto-approve checkbox - Only show in manual mode */}
           {stepMode && (
-            <div className="mb-4">
-              <VariablePanel
-                variables={variables}
-                onAddVariable={handleAddVariable}
-                onDeleteVariable={handleDeleteVariable}
-                disabled={composerDisabled || sendingChat}
-              />
-              {variablesError && (
-                <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-                  {variablesError}
-                </div>
-              )}
-
-              {/* Auto-approve checkbox */}
-              <div className="mt-3 pt-3 border-t border-gray-200">
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={autoApprovePlan}
-                    onChange={(e) => setAutoApprovePlan(e.target.checked)}
-                    className="mt-1 rounded"
-                    disabled={sendingChat || approvingPlan}
-                  />
-                  <span className="text-sm text-gray-700">
-                    <span className="font-medium">Auto-run plans</span>
-                    <span className="block text-xs text-gray-500 mt-0.5">
-                      Execute plans immediately without approval prompt (faster, but less control)
-                    </span>
+            <div className="mb-4 pt-3 border-t border-gray-200">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoApprovePlan}
+                  onChange={(e) => setAutoApprovePlan(e.target.checked)}
+                  className="mt-1 rounded"
+                  disabled={sendingChat || approvingPlan}
+                />
+                <span className="text-sm text-gray-700">
+                  <span className="font-medium">Auto-run plans</span>
+                  <span className="block text-xs text-gray-500 mt-0.5">
+                    Execute plans immediately without approval prompt (faster, but less control)
                   </span>
-                </label>
-              </div>
+                </span>
+              </label>
             </div>
           )}
 
@@ -1409,6 +1408,23 @@ export default function GenerationViewer() {
             </div>
           </div>
 
+          {/* Variable Panel - Only show in manual mode */}
+          {stepMode && (
+            <div className="mt-6 pt-4 border-t border-gray-200">
+              <VariablePanel
+                variables={variables}
+                onAddVariable={handleAddVariable}
+                onDeleteVariable={handleDeleteVariable}
+                disabled={composerDisabled || sendingChat}
+              />
+              {variablesError && (
+                <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                  {variablesError}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Logs Section (Collapsed) */}
           <div className="mt-6 border-t pt-4">
             <button
@@ -1457,7 +1473,7 @@ export default function GenerationViewer() {
           {steps.length === 0 ? (
             <p className="text-gray-500 text-sm">No steps recorded yet...</p>
           ) : (
-            <div className="space-y-3 max-h-[600px] overflow-y-auto">
+            <div className="space-y-3">
               {steps.map((step, index) => (
                 <div
                   key={step.stepNumber}
@@ -1670,7 +1686,7 @@ export default function GenerationViewer() {
               {saveModalError && (
                 <p className="text-sm text-red-600">{saveModalError}</p>
               )}
-              <div className="flex justify-end gap-3">
+              <div className="flex flex-wrap justify-between gap-3">
                 <button
                   type="button"
                   onClick={() => {
@@ -1683,14 +1699,24 @@ export default function GenerationViewer() {
                 >
                   Cancel
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void submitSaveForm()}
-                  disabled={savingTest}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {savingTest ? 'Saving…' : 'Save Test'}
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void submitSaveForm(false)}
+                    disabled={savingTest}
+                    className="rounded-lg border border-blue-600 bg-white px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    {savingTest ? 'Saving…' : 'Save and Continue'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitSaveForm(true)}
+                    disabled={savingTest}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {savingTest ? 'Saving…' : 'Save and Return to Dashboard'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

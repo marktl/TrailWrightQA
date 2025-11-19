@@ -50,7 +50,7 @@ async function ensurePlaywrightDependencies(dataDir: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(
       npx.command,
-      [...npx.argsPrefix, 'npm', 'install', '@playwright/test@^1.56.1', '--save', '--no-audit', '--no-fund'],
+      [...npx.argsPrefix, 'npm', 'install', '@playwright/test@^1.56.1', 'csv-parse@^5.5.0', '--save', '--no-audit', '--no-fund'],
       {
         cwd: dataDir,
         env: { ...baseEnv },

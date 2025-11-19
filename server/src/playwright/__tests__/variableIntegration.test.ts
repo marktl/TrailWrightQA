@@ -143,8 +143,8 @@ describe('LiveTestGenerator - Variable Integration', () => {
       expect(code).toContain('import { parse }');
       expect(code).toContain('csv-parse/sync');
       expect(code).toContain('.trailwright/test-data/test-123.csv');
-      expect(code).toContain('test.describe.each(testData)');
-      expect(code).toContain('(row) => {');
+      expect(code).toContain('for (const row of testData)');
+      expect(code).toContain('test(`');
       expect(code).toContain('product=${row.product}');
       expect(code).toContain('color=${row.color}');
       expect(code).toContain('"dataSource": "test-123.csv"');
@@ -159,7 +159,7 @@ describe('LiveTestGenerator - Variable Integration', () => {
       });
 
       expect(code).not.toContain('csv-parse');
-      expect(code).not.toContain('test.describe.each');
+      expect(code).not.toContain('for (const row of testData)');
       expect(code).not.toContain('dataSource');
       expect(code).toContain("test('Simple test'");
     });

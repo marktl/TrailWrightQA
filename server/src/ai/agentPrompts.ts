@@ -15,7 +15,7 @@ If you CAN execute the instruction:
   "steps": [
     {
       "description": "Brief description of what this step does",
-      "action": "click" | "fill" | "select" | "press" | "goto",
+      "action": "click" | "fill" | "select" | "press" | "goto" | "expectVisible" | "expectText" | "expectValue" | "expectUrl" | "expectTitle" | "screenshot",
       "selector": "playwright selector if applicable",
       "value": "value if applicable"
     }
@@ -77,6 +77,12 @@ AVAILABLE ACTIONS:
 - select: Select an option from dropdown
 - press: Press a keyboard key (e.g., "Enter", "Escape")
 - wait: Wait for a condition (use sparingly)
+- expectVisible: Verify an element is visible (requires selector)
+- expectText: Verify element contains text (requires selector and value with expected text)
+- expectValue: Verify input field has value (requires selector and value with expected value)
+- expectUrl: Verify current page URL matches pattern (requires value with expected URL/pattern)
+- expectTitle: Verify page title (requires value with expected title)
+- screenshot: Take a screenshot for documentation (optional value for screenshot name)
 - done: Goal is achieved, stop automation
 
 SELECTOR PRIORITY (use in this order):
@@ -105,9 +111,9 @@ RESPONSE FORMAT:
 You must respond with valid JSON only. No markdown, no explanation outside the JSON.
 
 {
-  "action": "click" | "fill" | "select" | "press" | "goto" | "wait" | "done",
-  "selector": "playwright selector string (required for click/fill/select)",
-  "value": "value to input (required for fill/select/press)",
+  "action": "click" | "fill" | "select" | "press" | "goto" | "wait" | "expectVisible" | "expectText" | "expectValue" | "expectUrl" | "expectTitle" | "screenshot" | "done",
+  "selector": "playwright selector string (required for click/fill/select/expectVisible/expectText/expectValue)",
+  "value": "value to input (required for fill/select/press/expectText/expectValue/expectUrl/expectTitle)",
   "reasoning": "brief explanation for QA staff (1 sentence)"
 }
 
@@ -124,6 +130,12 @@ GUIDELINES:
 10. Keep reasoning simple and non-technical for QA staff
 11. Always include reasoning field
 12. Be conservative with "wait" actions - only use if absolutely necessary
+13. **VALIDATION BEST PRACTICES:**
+    - After critical actions (form submission, purchase, login), use validation actions to verify success
+    - Use expectVisible to confirm important elements appear (success messages, confirmation pages, error alerts)
+    - Use expectText to verify specific content matches expectations
+    - Use expectUrl or expectTitle to confirm navigation to correct pages
+    - Include validation steps when the goal mentions "verify", "check", "ensure", or "confirm"
 
 EXAMPLES:
 User goal: "Click the login button"
@@ -145,13 +157,38 @@ Response:
   "reasoning": "Fill in email address field"
 }
 
-User goal: "Submit the form"
+User goal: "Submit the form and verify success message appears"
 Current state: Form is filled, submit button visible
 Response:
 {
   "action": "click",
   "selector": "getByRole('button', { name: 'Submit' })",
   "reasoning": "Submit the completed form"
+}
+Next step after submission:
+{
+  "action": "expectVisible",
+  "selector": "getByText('Success')",
+  "reasoning": "Verify success message is displayed"
+}
+
+User goal: "Verify search results contain the searched product"
+Page shows: Search results page with product listings
+Response:
+{
+  "action": "expectText",
+  "selector": "getByRole('heading', { name: /search results/i })",
+  "value": "teddy bear",
+  "reasoning": "Verify search results contain the searched product"
+}
+
+User goal: "Check that we're on the checkout page"
+Current URL: https://example.com/checkout
+Response:
+{
+  "action": "expectUrl",
+  "value": "/checkout",
+  "reasoning": "Verify we navigated to the checkout page"
 }
 
 User goal: "Navigate to login page"
@@ -291,4 +328,103 @@ Provide a concise test name (2-6 words). Avoid special characters other than spa
     .replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9 _-]+/g, '')
     .replace(/\s+/g, ' ')
     .slice(0, 60);
+}
+
+export async function generateTestTags(
+  goal: string,
+  steps: string[],
+  startUrl: string,
+  provider: AIProvider,
+  apiKey: string,
+  baseUrl?: string
+): Promise<string[]> {
+  const formattedSteps = steps.length
+    ? steps.map((summary, index) => `${index + 1}. ${summary}`).join('\n')
+    : 'No steps recorded yet.';
+
+  const prompt = `You are categorizing an automated QA test with relevant tags.
+
+Goal:
+${goal}
+
+Starting URL:
+${startUrl}
+
+Steps accomplished:
+${formattedSteps}
+
+Provide 3-5 relevant tags that describe what this test does. Tags should be:
+- Descriptive (e.g., "login", "checkout", "form-validation")
+- Lowercase with hyphens for multi-word tags (e.g., "user-registration")
+- Focused on test purpose, area, or functionality
+- Include one tag for the general category (e.g., "authentication", "e-commerce", "search")
+
+Always include "ai-generated" as one of the tags.
+
+Respond with comma-separated tags only (no explanations).`;
+
+  let response = '';
+
+  switch (provider) {
+    case 'anthropic': {
+      const client = new Anthropic({ apiKey });
+      const completion = await client.messages.create({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const block = completion.content[0];
+      if (block?.type !== 'text') {
+        throw new Error('Unexpected response from Anthropic while generating tags');
+      }
+      response = block.text;
+      break;
+    }
+    case 'openai': {
+      const client = new OpenAI({ apiKey, baseURL: baseUrl });
+      const completion = await client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 100
+      });
+      response = completion.choices[0]?.message?.content || '';
+      break;
+    }
+    case 'gemini': {
+      const genAI = new GoogleGenAI({ apiKey });
+      const result = await genAI.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: prompt
+      });
+      response = result.text || '';
+      break;
+    }
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+
+  if (!response.trim()) {
+    return ['ai-generated'];
+  }
+
+  // Parse comma-separated tags
+  const tags = response
+    .trim()
+    .split(',')
+    .map((tag) =>
+      tag
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+    )
+    .filter((tag) => tag.length > 0 && tag.length <= 30);
+
+  // Ensure ai-generated is always included
+  if (!tags.includes('ai-generated')) {
+    tags.unshift('ai-generated');
+  }
+
+  return tags.slice(0, 6); // Max 6 tags
 }

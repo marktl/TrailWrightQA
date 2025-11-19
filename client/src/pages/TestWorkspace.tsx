@@ -4,21 +4,21 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type {
   ApiTest,
-  ApiTestMetadata,
   RunStreamEvent,
   RunControlAction,
   ApiCredential
 } from '../api/client';
 import type {
   LiveRunState,
-  RunLogEntry,
   StepSummary,
   RunStatus,
-  ChatMessage,
   RunResult,
   RunScreenshot
 } from '../../../shared/types';
 import { SCREEN_SIZE_PRESETS } from '../constants/screenSizes';
+import { VariableDataGrid } from '../components/VariableDataGrid';
+import { CSVImportModal } from '../components/CSVImportModal';
+import type { VariableDefinition, VariableRow, ColumnMapping, ImportMode } from '../components/CSVImportModal';
 
 const statusLabels: Record<RunStatus, string> = {
   queued: 'Queued',
@@ -109,6 +109,13 @@ export default function TestWorkspace() {
   const [startingGeneration, setStartingGeneration] = useState(false);
   const [defaultStartUrl, setDefaultStartUrl] = useState('');
 
+  // Tab and variable data management
+  const [activeTab, setActiveTab] = useState<'details' | 'data'>('details');
+  const [variables, setVariables] = useState<VariableDefinition[]>([]);
+  const [variableData, setVariableData] = useState<VariableRow[]>([]);
+  const [loadingVariables, setLoadingVariables] = useState(false);
+  const [showCSVImport, setShowCSVImport] = useState(false);
+
   const refreshRuns = useCallback(async () => {
     if (!testId) return;
     try {
@@ -118,6 +125,53 @@ export default function TestWorkspace() {
       console.error('Failed to refresh runs', err);
     }
   }, [testId]);
+
+  const loadVariables = useCallback(async () => {
+    if (!testId) return;
+    setLoadingVariables(true);
+    try {
+      const response = await api.getTestVariables(testId);
+      setVariables(response.variables as VariableDefinition[] || []);
+      setVariableData(response.data || []);
+    } catch (err) {
+      console.error('Failed to load variables', err);
+      setVariables([]);
+      setVariableData([]);
+    } finally {
+      setLoadingVariables(false);
+    }
+  }, [testId]);
+
+  const handleDataChange = useCallback(async (newData: VariableRow[]) => {
+    if (!testId) return;
+    await api.updateTestVariables(testId, { data: newData });
+    setVariableData(newData);
+  }, [testId]);
+
+  const handleExportCSV = useCallback(async () => {
+    if (!testId) return;
+    try {
+      const csvContent = await api.exportTestVariables(testId);
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${test?.metadata.name || testId}-data.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to export CSV', err);
+      setError(err instanceof Error ? err.message : 'Failed to export CSV');
+    }
+  }, [testId, test]);
+
+  const handleImportCSV = useCallback(async (csvContent: string, mapping: ColumnMapping, mode: ImportMode) => {
+    if (!testId) return;
+    await api.importTestVariables(testId, { csvContent, mapping, mode });
+    await loadVariables();
+  }, [testId, loadVariables]);
 
   useEffect(() => {
     if (!testId) return;
@@ -214,6 +268,13 @@ export default function TestWorkspace() {
       cancelled = true;
     };
   }, [testId]);
+
+  // Load variables when Data tab is selected
+  useEffect(() => {
+    if (activeTab === 'data' && testId) {
+      void loadVariables();
+    }
+  }, [activeTab, testId, loadVariables]);
 
   const handleStreamEvent = useCallback((event: RunStreamEvent) => {
     if (event.type === 'hydrate') {
@@ -560,7 +621,34 @@ export default function TestWorkspace() {
                 </span>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              {/* Tab Navigation */}
+              <div className="flex border-b border-gray-200 mb-4">
+                <button
+                  onClick={() => setActiveTab('details')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === 'details'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Details
+                </button>
+                <button
+                  onClick={() => setActiveTab('data')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === 'data'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  Data {variables.length > 0 && `(${variables.length})`}
+                </button>
+              </div>
+
+              {/* Details Tab */}
+              {activeTab === 'details' && (
+                <>
+                  <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-gray-700">Name</label>
                   <input
@@ -671,6 +759,39 @@ export default function TestWorkspace() {
                   <span className="text-sm text-gray-600">{metaMessage}</span>
                 )}
               </div>
+                </>
+              )}
+
+              {/* Data Tab */}
+              {activeTab === 'data' && (
+                <div className="space-y-4">
+                  {loadingVariables ? (
+                    <p className="text-sm text-gray-500">Loading variable data...</p>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm text-gray-600">
+                          Manage test data for parameterized tests. Variables must be defined during test creation.
+                        </p>
+                        <button
+                          onClick={() => setShowCSVImport(true)}
+                          disabled={variables.length === 0}
+                          className="text-sm px-3 py-1.5 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Import CSV
+                        </button>
+                      </div>
+                      <VariableDataGrid
+                        testId={testId || ''}
+                        variables={variables}
+                        data={variableData}
+                        onDataChange={handleDataChange}
+                        onExportCSV={handleExportCSV}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="rounded-lg bg-white p-6 shadow">
@@ -1051,6 +1172,14 @@ export default function TestWorkspace() {
             </div>
           </div>
         )}
+
+        {/* CSV Import Modal */}
+        <CSVImportModal
+          isOpen={showCSVImport}
+          onClose={() => setShowCSVImport(false)}
+          variables={variables}
+          onImport={handleImportCSV}
+        />
       </div>
     </div>
   );

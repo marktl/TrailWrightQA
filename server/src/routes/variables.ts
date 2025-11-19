@@ -96,11 +96,12 @@ async function updateMetadataForRows(
 router.get('/:testId/variables', async (req, res) => {
   const { testId } = req.params;
   try {
-    await ensureTestExists(testId);
-    const rows = await storage.readVariables(testId);
-    return res.json({ rows });
+    const test = await loadTest(CONFIG.DATA_DIR, testId);
+    const data = await storage.readVariables(testId);
+    const variables = test.metadata.variables || [];
+    return res.json({ variables, data });
   } catch (error: any) {
-    if (error?.code === 'NOT_FOUND') {
+    if (error?.code === 'ENOENT' || error?.code === 'NOT_FOUND') {
       return res.status(404).json({ error: 'Test not found' });
     }
     console.error('[variables] Failed to read variables:', error);

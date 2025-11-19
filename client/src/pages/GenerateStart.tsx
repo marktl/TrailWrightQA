@@ -66,6 +66,33 @@ export default function GenerateStart() {
     }
   }
 
+  async function handleCreateCredential() {
+    if (!credentialForm.name.trim() || !credentialForm.username.trim() || !credentialForm.password.trim()) {
+      setCredentialError('Provide a name, username, and password for the new credential.');
+      return;
+    }
+
+    setSavingCredential(true);
+    setCredentialError(null);
+    try {
+      const response = await api.createCredential({
+        name: credentialForm.name.trim(),
+        username: credentialForm.username.trim(),
+        password: credentialForm.password.trim(),
+        notes: credentialForm.notes.trim() || undefined
+      });
+      setCredentialForm({ name: '', username: '', password: '', notes: '' });
+      setShowCredentialForm(false);
+      await loadCredentials();
+      setSelectedCredentialId(response.credential.id);
+    } catch (err) {
+      const text = err instanceof Error ? err.message : 'Failed to create credential';
+      setCredentialError(text);
+    } finally {
+      setSavingCredential(false);
+    }
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
 
@@ -430,29 +457,3 @@ export default function GenerateStart() {
     </div>
   );
 }
-  async function handleCreateCredential() {
-    if (!credentialForm.name.trim() || !credentialForm.username.trim() || !credentialForm.password.trim()) {
-      setCredentialError('Provide a name, username, and password for the new credential.');
-      return;
-    }
-
-    setSavingCredential(true);
-    setCredentialError(null);
-    try {
-      const response = await api.createCredential({
-        name: credentialForm.name.trim(),
-        username: credentialForm.username.trim(),
-        password: credentialForm.password.trim(),
-        notes: credentialForm.notes.trim() || undefined
-      });
-      setCredentialForm({ name: '', username: '', password: '', notes: '' });
-      setShowCredentialForm(false);
-      await loadCredentials();
-      setSelectedCredentialId(response.credential.id);
-    } catch (err) {
-      const text = err instanceof Error ? err.message : 'Failed to create credential';
-      setCredentialError(text);
-    } finally {
-      setSavingCredential(false);
-    }
-  }

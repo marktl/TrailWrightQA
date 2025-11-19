@@ -231,6 +231,21 @@ export async function finalizeRunExecution(
   if (options.terminated) {
     status = 'stopped';
     error = options.terminationReason || 'Run terminated by user';
+  } else if (
+    stderr.includes('No tests found') ||
+    stderr.includes('ENOENT') ||
+    stderr.includes('TypeError:') ||
+    stderr.includes('SyntaxError:') ||
+    stderr.includes('ReferenceError:') ||
+    stderr.includes('is not a function') ||
+    stderr.includes('is not defined')
+  ) {
+    // Handle test loading/compilation errors that don't produce non-zero exit codes
+    status = 'failed';
+    error = stderr || 'Test failed to load or compile';
+  } else if (exitCode !== 0) {
+    status = 'failed';
+    error = stderr || 'Test execution failed';
   } else if (playwrightResults?.suites) {
     const suites = playwrightResults.suites ?? [];
     const specs = suites.flatMap((suite: any) => suite.specs ?? []);
@@ -252,9 +267,6 @@ export async function finalizeRunExecution(
     } else {
       status = 'passed';
     }
-  } else if (exitCode !== 0) {
-    status = 'failed';
-    error = stderr || 'Test execution failed';
   }
 
   const traceRecord =

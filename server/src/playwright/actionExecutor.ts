@@ -58,6 +58,64 @@ export async function executeAction(
         await page.waitForTimeout(Math.min(waitTime, 5000)); // Max 5 seconds
         break;
 
+      case 'expectVisible':
+        if (!action.selector) {
+          throw new Error('expectVisible action requires a selector');
+        }
+        const visibleTarget = await resolveLocator(page, action.selector);
+        action.selector = visibleTarget.selectorForCode;
+        await visibleTarget.locator.waitFor({ state: 'visible', timeout: 10000 });
+        break;
+
+      case 'expectText':
+        if (!action.selector || !action.value) {
+          throw new Error('expectText action requires selector and value');
+        }
+        const textTarget = await resolveLocator(page, action.selector);
+        action.selector = textTarget.selectorForCode;
+        const actualText = await textTarget.locator.textContent();
+        if (!actualText || !actualText.includes(action.value)) {
+          throw new Error(`Expected text "${action.value}" not found. Found: "${actualText}"`);
+        }
+        break;
+
+      case 'expectValue':
+        if (!action.selector || action.value === undefined) {
+          throw new Error('expectValue action requires selector and value');
+        }
+        const valueTarget = await resolveLocator(page, action.selector);
+        action.selector = valueTarget.selectorForCode;
+        const actualValue = await valueTarget.locator.inputValue();
+        if (actualValue !== action.value) {
+          throw new Error(`Expected value "${action.value}" but found "${actualValue}"`);
+        }
+        break;
+
+      case 'expectUrl':
+        if (!action.value) {
+          throw new Error('expectUrl action requires a URL pattern in value field');
+        }
+        const currentUrl = page.url();
+        if (!currentUrl.includes(action.value)) {
+          throw new Error(`Expected URL to contain "${action.value}" but got "${currentUrl}"`);
+        }
+        break;
+
+      case 'expectTitle':
+        if (!action.value) {
+          throw new Error('expectTitle action requires expected title in value field');
+        }
+        const actualTitle = await page.title();
+        if (!actualTitle.includes(action.value)) {
+          throw new Error(`Expected title to contain "${action.value}" but got "${actualTitle}"`);
+        }
+        break;
+
+      case 'screenshot':
+        // Screenshot is captured automatically after each step
+        // This action is primarily for semantic documentation
+        break;
+
       case 'done':
         // No action needed
         break;
@@ -201,6 +259,25 @@ export function generatePlaywrightCode(action: AIAction): string {
     case 'wait':
       return `await page.waitForTimeout(${action.value || 1000});`;
 
+    case 'expectVisible':
+      return `await expect(page.${action.selector}).toBeVisible();`;
+
+    case 'expectText':
+      return `await expect(page.${action.selector}).toContainText('${escapeString(action.value || '')}');`;
+
+    case 'expectValue':
+      return `await expect(page.${action.selector}).toHaveValue('${escapeString(action.value || '')}');`;
+
+    case 'expectUrl':
+      return `await expect(page).toHaveURL(/${escapeRegex(action.value || '')}/);`;
+
+    case 'expectTitle':
+      return `await expect(page).toHaveTitle(/${escapeRegex(action.value || '')}/);`;
+
+    case 'screenshot':
+      const screenshotName = action.value || 'screenshot';
+      return `await page.screenshot({ path: '${screenshotName}.png' });`;
+
     case 'done':
       return '// Test goal achieved';
 
@@ -250,6 +327,38 @@ export function generateQASummary(action: AIAction): string {
 
     case 'wait':
       return 'Wait for page to load';
+
+    case 'expectVisible': {
+      const elementName = extractElementName(action.selector || '');
+      return elementName
+        ? `Verify "${elementName}" is visible`
+        : 'Verify element is visible';
+    }
+
+    case 'expectText': {
+      const elementName = extractElementName(action.selector || '');
+      const expectedText = action.value || '';
+      return elementName
+        ? `Verify "${elementName}" contains "${expectedText}"`
+        : `Verify text contains "${expectedText}"`;
+    }
+
+    case 'expectValue': {
+      const fieldName = extractElementName(action.selector || '');
+      const expectedValue = action.value || '';
+      return fieldName
+        ? `Verify "${fieldName}" has value "${expectedValue}"`
+        : `Verify value is "${expectedValue}"`;
+    }
+
+    case 'expectUrl':
+      return `Verify URL contains "${action.value}"`;
+
+    case 'expectTitle':
+      return `Verify page title contains "${action.value}"`;
+
+    case 'screenshot':
+      return action.value ? `Take screenshot: ${action.value}` : 'Take screenshot';
 
     case 'done':
       return 'Goal achieved';
@@ -304,6 +413,13 @@ function extractElementName(selector: string): string | null {
  */
 function escapeString(str: string): string {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+}
+
+/**
+ * Escape string for regex patterns
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

@@ -93,8 +93,8 @@ describe('TestCodeGenerator', () => {
       expect(code).toContain("import { join } from 'path';");
       expect(code).toContain('.trailwright/test-data/test-var-123.csv');
       expect(code).toContain('const testData = parse(readFileSync(dataPath');
-      expect(code).toContain('test.describe.each(testData)');
-      expect(code).toContain('(row) => {');
+      expect(code).toContain('for (const row of testData)');
+      expect(code).toContain('test(`');
     });
 
     it('generates test title with variable interpolation', () => {

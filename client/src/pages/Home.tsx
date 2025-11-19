@@ -26,7 +26,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [healthStatus, setHealthStatus] = useState<'ok' | 'error' | null>(null);
 
-  const [defaultStartUrl, setDefaultStartUrl] = useState('');
+  const [, setDefaultStartUrl] = useState('');
   const [providerStatus, setProviderStatus] = useState<{ provider: string; configured: boolean } | null>(null);
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
