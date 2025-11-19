@@ -7,8 +7,16 @@ import { ensureCredentialHelper } from './credentialBridge.js';
 export * from './config.js';
 export * from './tests.js';
 export * from './credentials.js';
+export * from './variables.js';
 
 async function ensurePlaywrightDependencies(dataDir: string): Promise<void> {
+  if (
+    process.env.TRAILWRIGHT_SKIP_PLAYWRIGHT_INSTALL === '1' ||
+    process.env.VITEST === '1' ||
+    process.env.VITEST === 'true'
+  ) {
+    return;
+  }
   const packageJsonPath = path.join(dataDir, 'package.json');
   const nodeModulesPath = path.join(dataDir, 'node_modules');
 
@@ -73,11 +81,13 @@ async function ensurePlaywrightDependencies(dataDir: string): Promise<void> {
 export async function initStorage(dataDir: string): Promise<void> {
   const testsDir = path.join(dataDir, 'tests');
   const runsDir = path.join(dataDir, 'runs');
+  const testDataDir = path.join(dataDir, 'test-data');
   const configPath = path.join(dataDir, 'config.json');
 
   // Create directories
   await fs.mkdir(testsDir, { recursive: true });
   await fs.mkdir(runsDir, { recursive: true });
+  await fs.mkdir(testDataDir, { recursive: true });
 
   // Create default config if doesn't exist
   try {

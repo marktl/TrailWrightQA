@@ -14,11 +14,20 @@ export interface TestMetadata {
   lastRunId?: string;
   credentialId?: string;
   startUrl?: string;
+  dataSource?: string;
+  variables?: VariableDefinition[];
 }
 
 export interface Test {
   metadata: TestMetadata;
   code: string;
+}
+
+export interface VariableDefinition {
+  name: string;
+  type?: 'string' | 'number';
+  sampleValue?: string;
+  description?: string;
 }
 
 export interface TestStepMetadata {
@@ -27,10 +36,12 @@ export interface TestStepMetadata {
   playwrightCode: string;
 }
 
+export type VariableRow = Record<string, string>;
+
 export interface RunResult {
   id: string;
   testId: string;
-  status: 'passed' | 'failed' | 'skipped' | 'stopped';
+  status: 'passed' | 'failed' | 'skipped' | 'stopped' | 'partial';
   duration: number;
   startedAt: string;
   endedAt: string;
@@ -39,6 +50,7 @@ export interface RunResult {
   screenshots?: RunScreenshot[];
   videoPath?: string;
   error?: string;
+  rowResults?: RowResult[];
 }
 
 export interface RunScreenshot {
@@ -48,6 +60,15 @@ export interface RunScreenshot {
   description?: string;
   capturedAt?: string;
   attachmentName?: string;
+}
+
+export interface RowResult {
+  rowIndex: number;
+  rowData: Record<string, string>;
+  status: 'passed' | 'failed';
+  duration: number;
+  tracePath?: string;
+  error?: string;
 }
 
 export type RunStatus = 'queued' | 'running' | 'paused' | 'stopped' | 'completed' | 'failed';

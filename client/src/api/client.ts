@@ -7,7 +7,9 @@ import type {
   RunStatus,
   LiveGenerationOptions,
   LiveGenerationState,
-  LiveGenerationEvent
+  LiveGenerationEvent,
+  VariableDefinition,
+  VariableRow
 } from '../../../shared/types';
 
 const API_BASE = '/api';
@@ -124,6 +126,37 @@ export const api = {
     }
 
     return response.json();
+  },
+  getVariables: (testId: string) =>
+    fetchApi<{ rows: VariableRow[] }>(`/tests/${testId}/variables`),
+  saveVariables: (
+    testId: string,
+    payload: { rows: VariableRow[]; variables?: VariableDefinition[] }
+  ) =>
+    fetchApi<{ rows: VariableRow[] }>(`/tests/${testId}/variables`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    }),
+  importVariables: (
+    testId: string,
+    payload: {
+      csvContent: string;
+      columnMapping?: Record<string, string | null>;
+      mode?: 'replace' | 'append';
+      variables?: VariableDefinition[];
+    }
+  ) =>
+    fetchApi<{ rows: VariableRow[]; rowCount: number }>(`/tests/${testId}/variables/import`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+  exportVariables: async (testId: string): Promise<string> => {
+    const response = await fetch(`${API_BASE}/tests/${testId}/variables/export`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Export failed' }));
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+    return response.text();
   },
   recordTest: (url?: string, viewportSize?: { width: number; height: number }) =>
     fetchApi<{ success: boolean; testId: string; message: string }>('/tests/record', {
@@ -263,6 +296,14 @@ export const api = {
     fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/manual-interrupt`, {
       method: 'POST'
     }),
+  approvePlan: (sessionId: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/approve-plan`, {
+      method: 'POST'
+    }),
+  rejectPlan: (sessionId: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/reject-plan`, {
+      method: 'POST'
+    }),
   deleteGenerationStep: (sessionId: string, stepNumber: number) =>
     fetchApi<{ success: boolean; state: LiveGenerationState }>(
       `/generate/${sessionId}/steps/${stepNumber}`,
@@ -288,6 +329,31 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(metadata)
     }),
+
+  // Variable management for generation sessions
+  getGenerationVariables: (sessionId: string) =>
+    fetchApi<{ variables: Array<{ name: string; type: string; sampleValue?: string }> }>(
+      `/generate/${sessionId}/variables`
+    ),
+  setGenerationVariable: (
+    sessionId: string,
+    variable: { name: string; sampleValue: string; type?: 'string' | 'number' }
+  ) =>
+    fetchApi<{
+      success: boolean;
+      variables: Array<{ name: string; type: string; sampleValue?: string }>;
+    }>(`/generate/${sessionId}/variables`, {
+      method: 'POST',
+      body: JSON.stringify(variable)
+    }),
+  deleteGenerationVariable: (sessionId: string, varName: string) =>
+    fetchApi<{
+      success: boolean;
+      variables: Array<{ name: string; type: string; sampleValue?: string }>;
+    }>(`/generate/${sessionId}/variables/${varName}`, {
+      method: 'DELETE'
+    }),
+
   connectToGenerationEvents: (
     sessionId: string,
     onEvent: (event: LiveGenerationEvent) => void

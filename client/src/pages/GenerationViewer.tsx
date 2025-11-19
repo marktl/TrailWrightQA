@@ -8,6 +8,7 @@ import type {
   RecordedStep,
   ChatMessage
 } from '../../../shared/types';
+import { VariablePanel, type Variable } from '../components/VariablePanel';
 
 const CATEGORY_DATALIST_ID = 'generation-category-options';
 
@@ -31,6 +32,8 @@ export default function GenerationViewer() {
   const [chatInput, setChatInput] = useState('');
   const [sendingChat, setSendingChat] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [approvingPlan, setApprovingPlan] = useState(false);
+  const [rejectingPlan, setRejectingPlan] = useState(false);
   const [sessionConfigEditing, setSessionConfigEditing] = useState(false);
   const [sessionConfigPrompt, setSessionConfigPrompt] = useState('');
   const [sessionConfigMaxSteps, setSessionConfigMaxSteps] = useState('');
@@ -54,6 +57,12 @@ export default function GenerationViewer() {
   });
   const [saveModalError, setSaveModalError] = useState<string | null>(null);
   const [savingTest, setSavingTest] = useState(false);
+
+  // Variable management state
+  const [variables, setVariables] = useState<Variable[]>([]);
+  const [variablesError, setVariablesError] = useState<string | null>(null);
+  const chatTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [autoApprovePlan, setAutoApprovePlan] = useState(false);
 
   function addCategoryOption(name?: string | null) {
     const trimmed = name?.trim();
@@ -102,9 +111,54 @@ export default function GenerationViewer() {
       if (initialState.savedTestId) {
         void hydrateSavedTest(initialState.savedTestId);
       }
+
+      // Load variables if in manual mode
+      if (initialState.mode === 'manual') {
+        void loadVariables();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load generation state';
       setError(message);
+    }
+  }
+
+  async function loadVariables() {
+    if (!sessionId) return;
+
+    try {
+      const { variables: vars } = await api.getGenerationVariables(sessionId);
+      setVariables(vars);
+    } catch (err) {
+      console.error('Failed to load variables:', err);
+      // Don't set error state - variables are optional
+    }
+  }
+
+  async function handleAddVariable(name: string, sampleValue: string, type: 'string' | 'number') {
+    if (!sessionId) return;
+
+    try {
+      setVariablesError(null);
+      const result = await api.setGenerationVariable(sessionId, { name, sampleValue, type });
+      setVariables(result.variables);
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : 'Failed to add variable';
+      setVariablesError(message);
+      throw err;
+    }
+  }
+
+  async function handleDeleteVariable(name: string) {
+    if (!sessionId) return;
+
+    try {
+      setVariablesError(null);
+      const result = await api.deleteGenerationVariable(sessionId, name);
+      setVariables(result.variables);
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : 'Failed to delete variable';
+      setVariablesError(message);
+      throw err;
     }
   }
 
@@ -189,6 +243,18 @@ export default function GenerationViewer() {
             chat: [...(prev.chat ?? []), chatMessage]
           };
         });
+        break;
+
+      case 'plan_ready':
+        setState((prev) => (prev ? { ...prev, pendingPlan: event.payload } : null));
+        break;
+
+      case 'plan_approved':
+        setState((prev) => (prev ? { ...prev, pendingPlan: undefined } : null));
+        break;
+
+      case 'plan_rejected':
+        setState((prev) => (prev ? { ...prev, pendingPlan: undefined } : null));
         break;
 
       case 'completed':
@@ -284,6 +350,13 @@ export default function GenerationViewer() {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
   }, [state?.chat]);
+
+  // Auto-approve plans if checkbox is enabled
+  useEffect(() => {
+    if (autoApprovePlan && state?.pendingPlan && !approvingPlan && !rejectingPlan) {
+      void handleApprovePlan();
+    }
+  }, [autoApprovePlan, state?.pendingPlan]);
 
   async function handlePause() {
     if (!sessionId || isPausing) return;
@@ -447,6 +520,34 @@ export default function GenerationViewer() {
       setError(message);
     } finally {
       setIsInterrupting(false);
+    }
+  }
+
+  async function handleApprovePlan() {
+    if (!sessionId || approvingPlan) return;
+
+    setApprovingPlan(true);
+    try {
+      await api.approvePlan(sessionId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to approve plan';
+      setError(message);
+    } finally {
+      setApprovingPlan(false);
+    }
+  }
+
+  async function handleRejectPlan() {
+    if (!sessionId || rejectingPlan) return;
+
+    setRejectingPlan(true);
+    try {
+      await api.rejectPlan(sessionId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to reject plan';
+      setError(message);
+    } finally {
+      setRejectingPlan(false);
     }
   }
 
@@ -1094,6 +1195,42 @@ export default function GenerationViewer() {
             </div>
           )}
 
+          {/* Variable Panel - Only show in manual mode */}
+          {stepMode && (
+            <div className="mb-4">
+              <VariablePanel
+                variables={variables}
+                onAddVariable={handleAddVariable}
+                onDeleteVariable={handleDeleteVariable}
+                disabled={composerDisabled || sendingChat}
+              />
+              {variablesError && (
+                <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                  {variablesError}
+                </div>
+              )}
+
+              {/* Auto-approve checkbox */}
+              <div className="mt-3 pt-3 border-t border-gray-200">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoApprovePlan}
+                    onChange={(e) => setAutoApprovePlan(e.target.checked)}
+                    className="mt-1 rounded"
+                    disabled={sendingChat || approvingPlan}
+                  />
+                  <span className="text-sm text-gray-700">
+                    <span className="font-medium">Auto-run plans</span>
+                    <span className="block text-xs text-gray-500 mt-0.5">
+                      Execute plans immediately without approval prompt (faster, but less control)
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </div>
+          )}
+
           {/* Chat Messages */}
           <div ref={chatRef} className="mb-4 space-y-3 max-h-[360px] overflow-y-auto pr-1">
             {state?.chat && state.chat.length > 0 ? (
@@ -1123,15 +1260,91 @@ export default function GenerationViewer() {
             )}
           </div>
 
+          {/* Plan Approval UI */}
+          {state?.pendingPlan && !autoApprovePlan && (
+            <div className="mb-4 rounded-lg border-2 border-blue-300 bg-blue-50 p-4">
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-blue-900">
+                  I will perform the following steps:
+                </p>
+                <ol className="mt-2 space-y-1 text-sm text-blue-800">
+                  {state.pendingPlan.steps.map((step, index) => (
+                    <li key={step.id} className="flex gap-2">
+                      <span className="font-medium">{index + 1}.</span>
+                      <span>{step.description}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleApprovePlan}
+                  disabled={approvingPlan || rejectingPlan}
+                  className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {approvingPlan ? 'Executing…' : 'Proceed'}
+                </button>
+                <button
+                  onClick={handleRejectPlan}
+                  disabled={approvingPlan || rejectingPlan}
+                  className="px-4 py-2 bg-gray-600 text-white text-sm font-medium rounded-lg hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {rejectingPlan ? 'Canceling…' : 'Cancel'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Auto-executing indicator */}
+          {state?.pendingPlan && autoApprovePlan && (
+            <div className="mb-4 rounded-lg border-2 border-green-300 bg-green-50 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-600"></div>
+                <p className="text-sm font-semibold text-green-900">
+                  Auto-executing plan...
+                </p>
+              </div>
+              <ol className="mt-2 space-y-1 text-sm text-green-800">
+                {state.pendingPlan.steps.map((step, index) => (
+                  <li key={step.id} className="flex gap-2">
+                    <span className="font-medium">{index + 1}.</span>
+                    <span>{step.description}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
           {/* Chat Input */}
           <div className="space-y-3">
             {isRunning && (
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                <span>Generation is live.</span>
-                <span>Use Pause or Stop above before adding feedback.</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                <div className="flex flex-wrap items-center gap-2">
+                  {stepMode ? (
+                    <>
+                      <span className="font-medium">Running next steps...</span>
+                      <span>You can interrupt to add a new instruction.</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Generation is live.</span>
+                      <span>Use Pause or Stop above before adding feedback.</span>
+                    </>
+                  )}
+                </div>
+                {canInterrupt && (
+                  <button
+                    onClick={handleInterrupt}
+                    disabled={isInterrupting}
+                    className="px-3 py-1.5 bg-orange-500 text-white text-xs font-medium rounded hover:bg-orange-600 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {isInterrupting ? 'Interrupting…' : 'Interrupt'}
+                  </button>
+                )}
               </div>
             )}
             <textarea
+              ref={chatTextareaRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => {
@@ -1140,8 +1353,37 @@ export default function GenerationViewer() {
                   void handleSendChat();
                 }
               }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const droppedText = e.dataTransfer.getData('text/plain');
+                if (droppedText && droppedText.match(/^\{\{\w+\}\}$/)) {
+                  // Insert at cursor position
+                  const textarea = chatTextareaRef.current;
+                  if (textarea) {
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    const newValue =
+                      chatInput.substring(0, start) + droppedText + chatInput.substring(end);
+                    setChatInput(newValue);
+
+                    // Set cursor after inserted text
+                    setTimeout(() => {
+                      textarea.selectionStart = textarea.selectionEnd = start + droppedText.length;
+                      textarea.focus();
+                    }, 0);
+                  }
+                }
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+              }}
               disabled={composerDisabled}
-              placeholder={composerPlaceholder}
+              placeholder={
+                composerDisabled
+                  ? composerPlaceholder
+                  : 'Type an instruction or drag a variable here...'
+              }
               className={`w-full min-h-[90px] rounded-lg border px-3 py-2 text-sm ${
                 composerDisabled
                   ? 'border-gray-200 bg-gray-50 text-gray-500 cursor-not-allowed'

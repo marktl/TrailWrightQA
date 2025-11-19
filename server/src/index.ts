@@ -10,6 +10,7 @@ import runsRouter from './routes/runs.js';
 import configRouter from './routes/config.js';
 import generateRouter from './routes/generate.js';
 import credentialsRouter from './routes/credentials.js';
+import variablesRouter from './routes/variables.js';
 
 const app = express();
 const CLIENT_DIST_DIR = path.resolve(process.cwd(), '../client/dist');
@@ -583,6 +584,7 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use('/api/tests', testsRouter);
+app.use('/api/tests', variablesRouter);
 app.use('/api/runs', runsRouter);
 app.use('/api/config', configRouter);
 app.use('/api/generate', generateRouter);

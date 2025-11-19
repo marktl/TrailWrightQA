@@ -14,6 +14,8 @@ export interface TestMetadata {
   lastRunId?: string;
   credentialId?: string;
   startUrl?: string;
+  dataSource?: string;
+  variables?: VariableDefinition[];
 }
 
 export interface TestStepMetadata {
@@ -21,6 +23,15 @@ export interface TestStepMetadata {
   qaSummary: string;
   playwrightCode: string;
 }
+
+export interface VariableDefinition {
+  name: string;
+  type?: 'string' | 'number';
+  sampleValue?: string;
+  description?: string;
+}
+
+export type VariableRow = Record<string, string>;
 
 export interface Test {
   metadata: TestMetadata;
@@ -41,7 +52,7 @@ export interface CredentialRecord {
 export interface RunResult {
   id: string;
   testId: string;
-  status: 'passed' | 'failed' | 'skipped' | 'stopped';
+  status: 'passed' | 'failed' | 'skipped' | 'stopped' | 'partial';
   duration: number;
   startedAt: string;
   endedAt: string;
@@ -49,6 +60,16 @@ export interface RunResult {
   screenshotPaths?: string[];
   screenshots?: RunScreenshot[];
   videoPath?: string;
+  error?: string;
+  rowResults?: RowResult[];
+}
+
+export interface RowResult {
+  rowIndex: number;
+  rowData: Record<string, string>;
+  status: 'passed' | 'failed';
+  duration: number;
+  tracePath?: string;
   error?: string;
 }
 
@@ -186,6 +207,25 @@ export interface LiveGenerationState {
     notes?: string;
   };
   mode: GenerationMode;
+  pendingPlan?: StepPlan; // For manual mode: plan awaiting approval
+}
+
+// Step planning types for manual mode
+export interface PlannedStep {
+  id: string;
+  description: string;
+  action: AIActionType;
+  selector?: string;
+  value?: string;
+}
+
+export interface StepPlan {
+  id: string;
+  originalInstruction: string;
+  steps: PlannedStep[];
+  canExecute: boolean; // true if AI can execute, false if needs clarification
+  clarificationMessage?: string; // message if canExecute is false
+  timestamp: string;
 }
 
 export type LiveGenerationEventType =
@@ -197,6 +237,9 @@ export type LiveGenerationEventType =
   | 'step_deleted'
   | 'page_changed'
   | 'chat'
+  | 'plan_ready'
+  | 'plan_approved'
+  | 'plan_rejected'
   | 'completed'
   | 'auto_saved'
   | 'error';

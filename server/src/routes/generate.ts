@@ -33,6 +33,8 @@ type PersistOptions = {
   successCriteria?: string;
   folder?: string;
   credentialId?: string;
+  variables?: TestMetadata['variables'];
+  dataSource?: string;
 };
 
 function formatAutoTestName(goal: string): string {
@@ -60,9 +62,12 @@ async function persistGeneratorTest(
 
   const existing = persistedSessions.get(generator.id);
   const now = new Date().toISOString();
+  const testId = options.id || existing?.id || `ai-${generator.id}`;
+  const testName = options.name?.trim() || existing?.name || formatAutoTestName(state.goal);
+
   const metadata: TestMetadata = {
-    id: options.id || existing?.id || `ai-${generator.id}`,
-    name: options.name?.trim() || existing?.name || formatAutoTestName(state.goal),
+    id: testId,
+    name: testName,
     description:
       options.description?.trim() || existing?.description || `Goal: ${state.goal}`,
     tags: summarizeTags(options.tags ?? existing?.tags),
@@ -77,13 +82,26 @@ async function persistGeneratorTest(
       qaSummary: step.qaSummary,
       playwrightCode: step.playwrightCode
     })),
+    variables: options.variables,
+    dataSource: options.dataSource,
     createdAt: existing?.createdAt || now,
     updatedAt: now
   };
 
   const test: Test = {
     metadata,
-    code: generator.generateTestCode()
+    code: generator.generateTestCode({
+      testId,
+      testName,
+      variables: options.variables,
+      metadata: {
+        description: metadata.description,
+        tags: metadata.tags,
+        prompt: metadata.prompt,
+        successCriteria: metadata.successCriteria,
+        credentialId: metadata.credentialId
+      }
+    })
   };
 
   await saveTest(CONFIG.DATA_DIR, test);
@@ -377,6 +395,53 @@ router.post('/:sessionId/manual-interrupt', (req, res) => {
   }
 });
 
+/**
+ * Approve the pending plan and execute it
+ */
+router.post('/:sessionId/approve-plan', async (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!generator.isManualMode()) {
+    return res.status(400).json({ error: 'Session is not in manual mode' });
+  }
+
+  try {
+    await generator.approvePlan();
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    console.error(`[generate] Approve plan error for session ${sessionId}:`, error);
+    res.status(400).json({ error: error?.message || 'Unable to approve plan', state: generator.getState() });
+  }
+});
+
+/**
+ * Reject the pending plan
+ */
+router.post('/:sessionId/reject-plan', (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!generator.isManualMode()) {
+    return res.status(400).json({ error: 'Session is not in manual mode' });
+  }
+
+  try {
+    generator.rejectPlan();
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Unable to reject plan' });
+  }
+});
+
 router.patch('/:sessionId/goal', (req, res) => {
   const { sessionId } = req.params;
   const { goal } = req.body;
@@ -466,6 +531,70 @@ router.patch('/:sessionId/keep-browser-open', (req, res) => {
   const keep = Boolean(req.body?.keepBrowserOpen);
   generator.updateKeepBrowserOpen(keep);
   res.json({ success: true, state: generator.getState() });
+});
+
+/**
+ * Get all variables for a generation session
+ */
+router.get('/:sessionId/variables', (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  const variables = generator.getVariables();
+  res.json({ variables });
+});
+
+/**
+ * Add or update a variable
+ */
+router.post('/:sessionId/variables', (req, res) => {
+  const { sessionId } = req.params;
+  const { name, sampleValue, type } = req.body ?? {};
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!generator.isManualMode()) {
+    return res.status(400).json({ error: 'Variables are only supported in step-by-step mode' });
+  }
+
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'Variable name is required' });
+  }
+
+  if (!sampleValue || typeof sampleValue !== 'string') {
+    return res.status(400).json({ error: 'Sample value is required' });
+  }
+
+  const varType = type === 'number' ? 'number' : 'string';
+
+  try {
+    generator.setVariable(name, sampleValue, varType);
+    res.json({ success: true, variables: generator.getVariables() });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Unable to set variable' });
+  }
+});
+
+/**
+ * Delete a variable
+ */
+router.delete('/:sessionId/variables/:varName', (req, res) => {
+  const { sessionId, varName } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  generator.removeVariable(varName);
+  res.json({ success: true, variables: generator.getVariables() });
 });
 
 router.post('/:sessionId/chat', async (req, res) => {

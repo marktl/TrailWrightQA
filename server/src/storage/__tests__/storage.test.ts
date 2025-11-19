@@ -5,6 +5,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
+process.env.TRAILWRIGHT_SKIP_PLAYWRIGHT_INSTALL = '1';
+
 describe('Storage', () => {
   let testDataDir: string;
 

@@ -12,12 +12,15 @@ import type {
   CaptureMode,
   ChatMessage,
   ViewportSize,
-  GenerationMode
+  GenerationMode,
+  StepPlan,
+  PlannedStep
 } from '../../../shared/types.js';
 import type { TestMetadata, CredentialRecord } from '../types.js';
 import { capturePageState, formatPageStateForAI, resetHashTracking } from './pageStateCapture.js';
 import { executeAction, createRecordedStep, generatePlaywrightCode, generateQASummary } from './actionExecutor.js';
-import { AGENT_SYSTEM_PROMPT, buildAgentPrompt, generateTestName } from '../ai/agentPrompts.js';
+import { AGENT_SYSTEM_PROMPT, STEP_PLANNER_SYSTEM_PROMPT, buildAgentPrompt, buildStepPlannerPrompt, generateTestName } from '../ai/agentPrompts.js';
+import { TestCodeGenerator } from './testCodeGenerator.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { GoogleGenAI } from '@google/genai';
@@ -71,6 +74,9 @@ export class LiveTestGenerator extends EventEmitter {
   private pendingManualAction?: { action: AIAction; playwrightCode: string; qaSummary: string };
   private activeManualInstruction?: string;
   private manualInterruptRequested = false;
+  private variables: Map<string, { name: string; type: string; sampleValue?: string }> = new Map();
+  private originalManualInstruction?: string; // Stores instruction with {{placeholders}}
+  private pendingPlan?: StepPlan; // For manual mode: plan awaiting user approval
 
   constructor(
     options: LiveGenerationOptions,
@@ -143,7 +149,8 @@ export class LiveTestGenerator extends EventEmitter {
             notes: this.credential.notes
           }
         : undefined,
-      mode: this.mode
+      mode: this.mode,
+      pendingPlan: this.pendingPlan
     };
   }
 
@@ -330,6 +337,12 @@ export class LiveTestGenerator extends EventEmitter {
             screenshotPath: screenshot?.path,
             screenshotData: screenshot?.data
           });
+
+          // If using variables in manual mode, inject placeholders back into code
+          if (this.variables.size > 0 && manualInstruction) {
+            recorded.playwrightCode = this.injectPlaceholdersIntoCode(recorded.playwrightCode);
+          }
+
           this.recordedSteps.push(recorded);
           this.nextStepNumber = this.recordedSteps.length + 1;
           this.consumeUserCorrection();
@@ -646,20 +659,11 @@ export class LiveTestGenerator extends EventEmitter {
       throw new Error('Instruction cannot be empty');
     }
 
-    if (!this.page) {
-      throw new Error('Browser not initialized');
-    }
-
-    if (this.isRunning) {
-      throw new Error('Already executing an action');
-    }
-
+    // Add user message to chat
     this.addChatMessage('user', trimmed);
-    this.userCorrections = [];
-    this.activeManualInstruction = trimmed;
-    this.manualInterruptRequested = false;
-    this.isPaused = false;
-    await this.runAgentLoop({ manualInstruction: trimmed });
+
+    // Create plan instead of executing directly
+    await this.createStepPlan(trimmed);
   }
 
   requestManualInterrupt(): void {
@@ -906,28 +910,439 @@ export class LiveTestGenerator extends EventEmitter {
   }
 
   /**
+   * Add or update a variable for this test
+   */
+  setVariable(name: string, sampleValue: string, type: 'string' | 'number' = 'string'): void {
+    const trimmedName = name.trim();
+    const trimmedValue = sampleValue.trim();
+
+    if (!trimmedName) {
+      throw new Error('Variable name cannot be empty');
+    }
+
+    if (!trimmedValue) {
+      throw new Error('Sample value cannot be empty');
+    }
+
+    this.variables.set(trimmedName, { name: trimmedName, type, sampleValue: trimmedValue });
+    this.log(`Variable "${trimmedName}" set with sample value: "${trimmedValue}"`);
+    this.touch();
+  }
+
+  /**
+   * Remove a variable
+   */
+  removeVariable(name: string): void {
+    if (this.variables.delete(name)) {
+      this.log(`Variable "${name}" removed`);
+      this.touch();
+    }
+  }
+
+  /**
+   * Get all variables as array
+   */
+  getVariables(): Array<{ name: string; type: string; sampleValue?: string }> {
+    return Array.from(this.variables.values());
+  }
+
+  /**
+   * Create a step plan from user instruction (planning phase for manual mode)
+   */
+  async createStepPlan(instruction: string): Promise<StepPlan> {
+    if (!this.page) {
+      throw new Error('Browser not initialized');
+    }
+
+    if (this.isRunning) {
+      throw new Error('Cannot create plan while another action is running');
+    }
+
+    const trimmed = instruction.trim();
+    if (!trimmed) {
+      throw new Error('Instruction cannot be empty');
+    }
+
+    // Validate variables
+    const validation = this.validateVariables(trimmed);
+    if (!validation.valid) {
+      const missing = validation.missing.join(', ');
+      throw new Error(
+        `Cannot create plan: missing sample values for variables: ${missing}. ` +
+          `Please set sample values for these variables before using them.`
+      );
+    }
+
+    // Store original instruction with placeholders
+    this.originalManualInstruction = trimmed;
+
+    // Resolve variables for AI execution
+    const resolved = this.resolveVariables(trimmed);
+
+    // Capture current page state
+    const pageState = await capturePageState(this.page);
+    this.currentUrl = pageState.url;
+
+    // Ask AI to create plan
+    this.updateStatus('thinking');
+    this.log(`Creating plan for: "${trimmed}"`);
+
+    const prompt = buildStepPlannerPrompt(
+      resolved,
+      this.currentUrl,
+      formatPageStateForAI(pageState),
+      this.recordedSteps
+    );
+
+    try {
+      let responseText: string;
+
+      switch (this.provider) {
+        case 'anthropic':
+          responseText = await this.callAnthropicPlanner(prompt);
+          break;
+        case 'openai':
+          responseText = await this.callOpenAIPlanner(prompt);
+          break;
+        case 'gemini':
+          responseText = await this.callGeminiPlanner(prompt);
+          break;
+        default:
+          throw new Error(`Unsupported provider: ${this.provider}`);
+      }
+
+      // Parse JSON response
+      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const planResponse = JSON.parse(cleaned);
+
+      if (!planResponse.canExecute) {
+        // AI needs clarification
+        const clarificationMessage = planResponse.clarificationMessage || 'I cannot execute this instruction. Please provide more details.';
+        this.addChatMessage('assistant', clarificationMessage);
+        this.enterManualAwaitingState();
+        throw new Error(clarificationMessage);
+      }
+
+      // Create plan with unique IDs
+      const plan: StepPlan = {
+        id: `plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        originalInstruction: trimmed,
+        steps: planResponse.steps.map((step: any, index: number) => ({
+          id: `step-${index}-${Math.random().toString(36).slice(2, 6)}`,
+          description: step.description,
+          action: step.action,
+          selector: step.selector,
+          value: step.value
+        })),
+        canExecute: true,
+        timestamp: new Date().toISOString()
+      };
+
+      this.pendingPlan = plan;
+      this.touch();
+
+      // Emit plan_ready event
+      this.emit('event', {
+        type: 'plan_ready',
+        timestamp: new Date().toISOString(),
+        payload: plan
+      });
+
+      // Update chat
+      const stepsList = plan.steps.map((s, i) => `${i + 1}. ${s.description}`).join('\n');
+      this.addChatMessage('assistant', `I will perform the following steps:\n\n${stepsList}\n\nProceed?`);
+
+      this.enterManualAwaitingState();
+      return plan;
+    } catch (error: any) {
+      this.enterManualAwaitingState();
+      throw new Error(`Failed to create plan: ${error.message}`);
+    }
+  }
+
+  /**
+   * Approve and execute the pending plan
+   */
+  async approvePlan(): Promise<void> {
+    if (!this.pendingPlan) {
+      throw new Error('No pending plan to approve');
+    }
+
+    if (!this.page) {
+      throw new Error('Browser not initialized');
+    }
+
+    const plan = this.pendingPlan;
+    this.log(`Plan approved. Executing ${plan.steps.length} steps...`);
+
+    this.addChatMessage('user', 'Proceed');
+    this.pendingPlan = undefined; // Clear pending plan before execution
+
+    // Emit plan_approved event
+    this.emit('event', {
+      type: 'plan_approved',
+      timestamp: new Date().toISOString(),
+      payload: { planId: plan.id }
+    });
+
+    this.updateStatus('running');
+
+    // Execute each planned step
+    for (let i = 0; i < plan.steps.length; i++) {
+      const plannedStep = plan.steps[i];
+      const stepNumber = this.nextStepNumber;
+
+      this.log(`Executing step ${i + 1}/${plan.steps.length}: ${plannedStep.description}`);
+
+      // Convert planned step to AIAction
+      const action: AIAction = {
+        action: plannedStep.action,
+        selector: plannedStep.selector,
+        value: plannedStep.value,
+        reasoning: plannedStep.description
+      };
+
+      // Execute the action
+      const result = await executeAction(this.page, action);
+
+      if (!result.success) {
+        // Step failed
+        this.log(`❌ Step failed: ${result.error}`);
+        this.addChatMessage('assistant', `Step "${plannedStep.description}" failed: ${result.error}\n\nPlease provide a new instruction or adjust your approach.`);
+        this.enterManualAwaitingState();
+        return;
+      }
+
+      // Step succeeded - record it
+      await this.page.waitForTimeout(500);
+      const screenshot = await this.captureStepScreenshot(stepNumber);
+
+      const recorded = createRecordedStep(stepNumber, action, {
+        url: this.currentUrl,
+        screenshotPath: screenshot?.path,
+        screenshotData: screenshot?.data
+      });
+
+      // Inject placeholders back if using variables
+      if (this.variables.size > 0) {
+        recorded.playwrightCode = this.injectPlaceholdersIntoCode(recorded.playwrightCode);
+      }
+
+      this.recordedSteps.push(recorded);
+      this.nextStepNumber = this.recordedSteps.length + 1;
+
+      this.emit('event', {
+        type: 'step_recorded',
+        timestamp: new Date().toISOString(),
+        payload: recorded
+      });
+
+      this.log(`${stepNumber}. ${recorded.qaSummary}`);
+      this.addChatMessage('assistant', `Step recorded: ${recorded.qaSummary}`);
+      this.touch();
+    }
+
+    // All steps completed successfully
+    this.log(`✓ All ${plan.steps.length} steps completed`);
+    this.addChatMessage('assistant', `All steps completed successfully.\n\nDescribe the next browser action when you're ready.`);
+    this.enterManualAwaitingState();
+  }
+
+  /**
+   * Reject the pending plan
+   */
+  rejectPlan(): void {
+    if (!this.pendingPlan) {
+      throw new Error('No pending plan to reject');
+    }
+
+    const planId = this.pendingPlan.id;
+    this.pendingPlan = undefined;
+    this.log('Plan rejected by user');
+
+    this.addChatMessage('user', 'Cancel');
+    this.addChatMessage('assistant', 'Plan cancelled. Describe a new instruction when you\'re ready.');
+
+    // Emit plan_rejected event
+    this.emit('event', {
+      type: 'plan_rejected',
+      timestamp: new Date().toISOString(),
+      payload: { planId }
+    });
+
+    this.enterManualAwaitingState();
+    this.touch();
+  }
+
+  /**
+   * Call AI provider for planning (Anthropic)
+   */
+  private async callAnthropicPlanner(prompt: string): Promise<string> {
+    const client = new Anthropic({ apiKey: this.apiKey });
+    const message = await client.messages.create({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 1000,
+      system: STEP_PLANNER_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const content = message.content[0];
+    if (content.type !== 'text') {
+      throw new Error('Unexpected response type from Anthropic');
+    }
+
+    return content.text;
+  }
+
+  /**
+   * Call AI provider for planning (OpenAI)
+   */
+  private async callOpenAIPlanner(prompt: string): Promise<string> {
+    const client = new OpenAI({ apiKey: this.apiKey });
+    const completion = await client.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: STEP_PLANNER_SYSTEM_PROMPT },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 1000,
+      response_format: { type: 'json_object' }
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from OpenAI');
+    }
+
+    return content;
+  }
+
+  /**
+   * Call AI provider for planning (Gemini)
+   */
+  private async callGeminiPlanner(prompt: string): Promise<string> {
+    const genAI = new GoogleGenAI({ apiKey: this.apiKey });
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-pro',
+      contents: prompt,
+      config: {
+        systemInstruction: STEP_PLANNER_SYSTEM_PROMPT,
+        responseMimeType: 'application/json'
+      }
+    });
+
+    const text = result.text;
+    if (!text) {
+      throw new Error('No response from Gemini');
+    }
+
+    return text;
+  }
+
+  /**
+   * Detect variable placeholders in instruction ({{varName}})
+   */
+  private detectVariables(instruction: string): string[] {
+    const placeholderPattern = /\{\{(\w+)\}\}/g;
+    const matches = instruction.matchAll(placeholderPattern);
+    const variables = new Set<string>();
+
+    for (const match of matches) {
+      variables.add(match[1]);
+    }
+
+    return Array.from(variables);
+  }
+
+  /**
+   * Validate that all variables in instruction have sample values
+   */
+  private validateVariables(instruction: string): { valid: boolean; missing: string[] } {
+    const detectedVars = this.detectVariables(instruction);
+    const missing: string[] = [];
+
+    for (const varName of detectedVars) {
+      const variable = this.variables.get(varName);
+      if (!variable || !variable.sampleValue) {
+        missing.push(varName);
+      }
+    }
+
+    return { valid: missing.length === 0, missing };
+  }
+
+  /**
+   * Resolve variable placeholders with sample values
+   * e.g., "Search for {{product}}" -> "Search for teddy bear"
+   */
+  private resolveVariables(instruction: string): string {
+    return instruction.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
+      const variable = this.variables.get(varName);
+      return variable?.sampleValue || match;
+    });
+  }
+
+  /**
+   * Inject variable placeholders back into generated code
+   * Replaces sample values with {{varName}} in code strings
+   */
+  private injectPlaceholdersIntoCode(code: string): string {
+    let result = code;
+
+    // For each variable, replace its sample value with the placeholder
+    for (const [varName, variable] of this.variables.entries()) {
+      if (!variable.sampleValue) continue;
+
+      // Escape special regex characters in the sample value
+      const escapedValue = variable.sampleValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      // Replace occurrences in string literals (single and double quotes)
+      // Match: fill('sampleValue') -> fill('{{varName}}')
+      const singleQuotePattern = new RegExp(`'([^']*?)${escapedValue}([^']*?)'`, 'g');
+      const doubleQuotePattern = new RegExp(`"([^"]*?)${escapedValue}([^"]*?)"`, 'g');
+
+      result = result.replace(singleQuotePattern, (match, before, after) => {
+        return `'${before}{{${varName}}}${after}'`;
+      });
+
+      result = result.replace(doubleQuotePattern, (match, before, after) => {
+        return `"${before}{{${varName}}}${after}"`;
+      });
+    }
+
+    return result;
+  }
+
+  /**
    * Generate the complete test file code
    */
-  generateTestCode(): string {
-    const startUrlLiteral = JSON.stringify(this.options.startUrl);
-    const stepComments = this.recordedSteps
-      .map((step) => `  // ${step.stepNumber}. ${step.qaSummary}`)
-      .join('\n');
+  generateTestCode(options?: {
+    testId?: string;
+    testName?: string;
+    variables?: TestMetadata['variables'];
+    metadata?: Partial<TestMetadata>;
+  }): string {
+    const generator = new TestCodeGenerator();
 
-    const stepCode = this.recordedSteps
-      .map((step) => `  ${step.playwrightCode}`)
-      .join('\n');
+    // Use variables from options, or convert from this session's variable map
+    const variables =
+      options?.variables ||
+      (this.variables.size > 0
+        ? Array.from(this.variables.values()).map((v) => ({
+            name: v.name,
+            type: v.type as 'string' | 'number',
+            sampleValue: v.sampleValue
+          }))
+        : undefined);
 
-    return `import { test, expect } from '@playwright/test';
-
-test('${this.options.goal}', async ({ page }) => {
-  // Navigate to starting URL
-  await page.goto(${startUrlLiteral});
-
-${stepComments}
-
-${stepCode}
-});`;
+    return generator.generateTestFile({
+      testId: options?.testId || this.sessionId,
+      testName: options?.testName || this.options.goal,
+      startUrl: this.options.startUrl,
+      steps: this.recordedSteps,
+      variables,
+      metadata: options?.metadata
+    });
   }
 
   // Helper methods
