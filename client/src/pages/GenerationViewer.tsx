@@ -1012,7 +1012,7 @@ export default function GenerationViewer() {
               {(!stepMode || !sessionConfigEditing) && (
                 <div>
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                    Goal
+                    {stepMode ? 'Description' : 'Goal'}
                   </p>
                   {sessionConfigEditing ? (
                     <textarea
