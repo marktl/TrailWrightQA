@@ -427,23 +427,6 @@ export default function RunSession() {
                   </div>
                 )}
 
-                {scriptedSteps.length > 0 && (
-                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                    <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wide mb-3">
-                      Scripted Steps
-                    </h3>
-                    <ol className="space-y-3 text-sm text-gray-700 list-decimal list-inside">
-                      {scriptedSteps.map((step) => (
-                        <li key={step.number} className="space-y-2">
-                          <div className="font-medium text-gray-900">{step.qaSummary}</div>
-                          <pre className="whitespace-pre-wrap rounded bg-gray-900 text-xs text-green-300 px-3 py-2 overflow-x-auto">
-                            {step.playwrightCode}
-                          </pre>
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                )}
 
                 <div className="border border-gray-100 rounded-lg">
                   <button
@@ -486,15 +469,20 @@ export default function RunSession() {
               </div>
 
               <div className="bg-white rounded-lg shadow p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Live Step Summary</h2>
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">Test Steps</h2>
                 {orderedSteps.length === 0 ? (
-                  <p className="text-gray-500">Waiting for step activity…</p>
+                  <p className="text-gray-500">Waiting for test execution…</p>
                 ) : (
                   <div className="space-y-3">
-                    {orderedSteps.map((step: StepSummary, index) => {
-                      const scripted = scriptedSteps[index];
-                      const displaySummary = scripted?.qaSummary || step.title;
-                      const scriptedLabel = scripted ? `Step ${scripted.number}` : undefined;
+                    {orderedSteps.map((step: StepSummary) => {
+                      // Find matching screenshot for this step
+                      const stepScreenshots = (run?.result?.screenshots || []).filter(
+                        (screenshot) => screenshot.stepTitle === step.title
+                      );
+                      const duration = step.endedAt && step.startedAt
+                        ? formatDuration(new Date(step.endedAt).getTime() - new Date(step.startedAt).getTime())
+                        : '';
+
                       return (
                         <div
                           key={step.id}
@@ -502,24 +490,61 @@ export default function RunSession() {
                           style={{ marginLeft: `${step.depth * 12}px` }}
                         >
                           <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="font-medium text-gray-900">{displaySummary}</p>
-                              {scripted && step.title && step.title !== scripted.qaSummary && (
-                                <p className="text-xs text-gray-600 mt-1">{step.title}</p>
+                            <div className="flex-1">
+                              <p className="font-medium text-gray-900">{step.title}</p>
+                              {duration && (
+                                <p className="text-xs text-gray-500 mt-1">{duration}</p>
                               )}
                             </div>
-                            <div className="text-right text-xs uppercase tracking-wide text-gray-600">
-                              {scriptedLabel && <div className="text-gray-500 mb-1">{scriptedLabel}</div>}
-                              <div>{step.status}</div>
+                            <div className="flex items-center gap-2">
+                              {step.status === 'passed' && (
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+                                  ✓ Passed
+                                </span>
+                              )}
+                              {step.status === 'failed' && (
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                  ✗ Failed
+                                </span>
+                              )}
+                              {step.status === 'pending' && (
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                  Running
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <div className="mt-1 text-xs text-gray-600 flex flex-wrap gap-3">
-                            <span>Started {formatTimestamp(step.startedAt)}</span>
-                            {step.endedAt && <span>Ended {formatTimestamp(step.endedAt)}</span>}
-                            {step.category && <span>{step.category}</span>}
-                          </div>
+
                           {step.error && (
-                            <p className="mt-2 text-sm text-red-700">{step.error}</p>
+                            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">
+                              <p className="font-medium mb-1">Error:</p>
+                              <p className="whitespace-pre-wrap">{step.error}</p>
+                            </div>
+                          )}
+
+                          {run?.result?.errorSummary && step.status === 'failed' && (
+                            <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900">
+                              <p className="font-medium mb-1">💡 What went wrong:</p>
+                              <p>{run.result.errorSummary}</p>
+                            </div>
+                          )}
+
+                          {stepScreenshots.length > 0 && (
+                            <div className="mt-3 space-y-2">
+                              {stepScreenshots.map((screenshot, idx) => (
+                                <div key={idx} className="border border-gray-200 rounded overflow-hidden">
+                                  <img
+                                    src={`/api/runs/${runId}/artifacts/${screenshot.path}`}
+                                    alt={screenshot.description || `Screenshot for ${step.title}`}
+                                    className="w-full"
+                                    onError={(e) => {
+                                      // Hide image on error
+                                      (e.target as HTMLImageElement).style.display = 'none';
+                                    }}
+                                  />
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
                       );

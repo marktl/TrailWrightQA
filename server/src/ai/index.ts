@@ -243,3 +243,102 @@ function cleanGeneratedCode(code: string): string {
 
   return cleaned;
 }
+
+const ERROR_SUMMARY_PROMPT = `You are a QA assistant helping non-technical users understand test failures.
+
+Your task: Convert technical Playwright error messages into 1-2 sentence plain English explanations that a business analyst can understand.
+
+Focus on:
+- What went wrong in simple terms
+- Why it might have failed (e.g., timing issue, wrong data, element not found)
+- A specific suggestion to fix it (e.g., "add a wait", "check the data", "update the selector")
+
+Be concise and actionable. No jargon.`;
+
+export interface SummarizeErrorOptions {
+  provider: AIProvider;
+  apiKey: string;
+  error: string;
+  stepContext?: string;
+}
+
+export async function summarizeError(options: SummarizeErrorOptions): Promise<string> {
+  const { provider, apiKey, error, stepContext } = options;
+
+  const prompt = stepContext
+    ? `Test step: "${stepContext}"\n\nError:\n${error}\n\nProvide a brief, non-technical explanation:`
+    : `Error:\n${error}\n\nProvide a brief, non-technical explanation:`;
+
+  try {
+    switch (provider) {
+      case 'anthropic':
+        return await summarizeWithAnthropic(apiKey, prompt);
+      case 'openai':
+        return await summarizeWithOpenAI(apiKey, prompt);
+      case 'gemini':
+        return await summarizeWithGemini(apiKey, prompt);
+      default:
+        return error; // Return original error if provider not supported
+    }
+  } catch {
+    return error; // Return original error if summarization fails
+  }
+}
+
+async function summarizeWithAnthropic(apiKey: string, prompt: string): Promise<string> {
+  const client = new Anthropic({ apiKey });
+
+  const message = await client.messages.create({
+    model: 'claude-3-5-haiku-20241022', // Use faster/cheaper model for summaries
+    max_tokens: 200,
+    system: ERROR_SUMMARY_PROMPT,
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  const content = message.content[0];
+  if (content.type !== 'text') {
+    throw new Error('Unexpected response type from Anthropic');
+  }
+
+  return content.text.trim();
+}
+
+async function summarizeWithOpenAI(apiKey: string, prompt: string): Promise<string> {
+  const client = new OpenAI({ apiKey });
+
+  const completion = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    max_tokens: 200,
+    messages: [
+      { role: 'system', content: ERROR_SUMMARY_PROMPT },
+      { role: 'user', content: prompt }
+    ]
+  });
+
+  const content = completion.choices[0]?.message?.content?.trim();
+  if (!content) {
+    throw new Error('No response from OpenAI');
+  }
+
+  return content;
+}
+
+async function summarizeWithGemini(apiKey: string, prompt: string): Promise<string> {
+  const genAI = new GoogleGenAI({ apiKey });
+
+  const result = await genAI.models.generateContent({
+    model: 'gemini-2.0-flash-exp', // Use faster model for summaries
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: {
+      systemInstruction: ERROR_SUMMARY_PROMPT,
+      maxOutputTokens: 200
+    }
+  });
+
+  const text = result.text?.trim();
+  if (!text) {
+    throw new Error('No response from Gemini');
+  }
+
+  return text;
+}

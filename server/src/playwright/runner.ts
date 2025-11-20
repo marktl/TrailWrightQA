@@ -7,6 +7,8 @@ import type { ViewportSize } from '../../../shared/types.js';
 import { serializeCredentialsBlob } from '../storage/credentials.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
 import { loadTest, saveTest } from '../storage/tests.js';
+import { summarizeError } from '../ai/index.js';
+import { loadConfig } from '../storage/config.js';
 
 export interface RunTestOptions {
   dataDir: string;
@@ -115,11 +117,42 @@ type ScreenshotAttachment = {
   sourceKey: string;
   attachmentName?: string;
   testTitle?: string;
+  stepTitle?: string;
   capturedAt?: string;
 };
 
 function collectScreenshotAttachments(playwrightResults: any): ScreenshotAttachment[] {
   const attachments: ScreenshotAttachment[] = [];
+
+  function walkSteps(steps: any[], testTitle: string, capturedAt?: string): void {
+    for (const step of steps ?? []) {
+      // Check attachments in this step
+      for (const attachment of step.attachments ?? []) {
+        if (!attachment?.path || typeof attachment.path !== 'string') {
+          continue;
+        }
+        const contentType = String(attachment.contentType || '').toLowerCase();
+        const attachmentName = String(attachment.name || '');
+        if (
+          contentType.includes('image/') ||
+          attachmentName.toLowerCase().includes('screenshot')
+        ) {
+          attachments.push({
+            sourceKey: normalizePath(attachment.path),
+            attachmentName: attachment.name,
+            testTitle,
+            stepTitle: step.title, // Use step title from test.step()
+            capturedAt: capturedAt ? new Date(capturedAt).toISOString() : undefined
+          });
+        }
+      }
+
+      // Recursively walk child steps
+      if (Array.isArray(step.steps)) {
+        walkSteps(step.steps, testTitle, capturedAt);
+      }
+    }
+  }
 
   function walkSuite(suite: any): void {
     if (!suite) return;
@@ -129,6 +162,14 @@ function collectScreenshotAttachments(playwrightResults: any): ScreenshotAttachm
         for (const test of spec.tests ?? []) {
           for (const result of test.results ?? []) {
             const capturedAt = result.startTime || result.startedAt || result.startWallTime;
+            const testTitle = spec?.title || test?.title;
+
+            // Walk steps to find screenshots
+            if (Array.isArray(result.steps)) {
+              walkSteps(result.steps, testTitle, capturedAt);
+            }
+
+            // Also check attachments at result level (for failure screenshots)
             for (const attachment of result.attachments ?? []) {
               if (!attachment?.path || typeof attachment.path !== 'string') {
                 continue;
@@ -142,7 +183,8 @@ function collectScreenshotAttachments(playwrightResults: any): ScreenshotAttachm
                 attachments.push({
                   sourceKey: normalizePath(attachment.path),
                   attachmentName: attachment.name,
-                  testTitle: spec?.title || test?.title,
+                  testTitle,
+                  stepTitle: undefined, // Result-level screenshots don't have step title
                   capturedAt: capturedAt ? new Date(capturedAt).toISOString() : undefined
                 });
               }
@@ -287,8 +329,8 @@ export async function finalizeRunExecution(
     }
     matchedScreenshots.add(record.filename);
     screenshotDetails.push({
-      path: buildArtifactUrl(context.runId, record.filename),
-      stepTitle: attachment.attachmentName || undefined,
+      path: record.filename, // Store just the filename, not the full URL
+      stepTitle: attachment.stepTitle || undefined, // Use step title from test.step()
       testTitle: attachment.testTitle,
       capturedAt: attachment.capturedAt,
       attachmentName: attachment.attachmentName
@@ -300,7 +342,7 @@ export async function finalizeRunExecution(
   );
   remainingScreenshots.forEach((record, index) => {
     screenshotDetails.push({
-      path: buildArtifactUrl(context.runId, record.filename),
+      path: record.filename, // Store just the filename
       stepTitle: `Screenshot ${screenshotDetails.length + index + 1}`
     });
   });
@@ -310,6 +352,24 @@ export async function finalizeRunExecution(
   const videoPath = videoRecord
     ? buildArtifactUrl(context.runId, videoRecord.filename)
     : undefined;
+
+  // Summarize error with AI if available and test failed
+  let errorSummary: string | undefined;
+  if (error && status === 'failed') {
+    try {
+      const config = await loadConfig(context.dataDir);
+      if (config.ai?.provider && config.ai?.apiKey) {
+        errorSummary = await summarizeError({
+          provider: config.ai.provider,
+          apiKey: config.ai.apiKey,
+          error,
+          stepContext: undefined // Could pass failing step context here
+        });
+      }
+    } catch {
+      // Ignore summarization errors
+    }
+  }
 
   const result: RunResult = {
     id: context.runId,
@@ -322,7 +382,8 @@ export async function finalizeRunExecution(
     videoPath,
     screenshotPaths: screenshotPaths.length ? screenshotPaths : undefined,
     screenshots: screenshotDetails.length ? screenshotDetails : undefined,
-    error
+    error,
+    errorSummary
   };
 
   await fs.writeFile(path.join(context.runDir, 'result.json'), JSON.stringify(result, null, 2));

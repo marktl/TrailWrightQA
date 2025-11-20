@@ -37,8 +37,9 @@ describe('TestCodeGenerator', () => {
       expect(code).toContain("test('Login test'");
       expect(code).toContain('await page.goto("https://example.com/login")');
       expect(code).toContain("await page.getByRole('button', { name: 'Login' }).click();");
-      expect(code).toContain('// 1. Click "Login" button');
-      expect(code).toContain('// 2. Fill "Username" field with "testuser"');
+      // Check that steps are wrapped in test.step() with QA summaries
+      expect(code).toContain('await test.step(\'Click "Login" button\', async () => {');
+      expect(code).toContain('await test.step(\'Fill "Username" field with "testuser"\', async () => {');
     });
 
     it('handles test names with single quotes', () => {

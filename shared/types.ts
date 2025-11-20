@@ -61,6 +61,7 @@ export interface RunResult {
   screenshots?: RunScreenshot[];
   videoPath?: string;
   error?: string;
+  errorSummary?: string;
   rowResults?: RowResult[];
 }
 

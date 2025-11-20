@@ -58,6 +58,13 @@ router.post('/', async (req, res) => {
           ? req.body.keepBrowserOpen.toLowerCase() !== 'false'
           : false;
 
+    const stopOnFailure =
+      typeof req.body.stopOnFailure === 'boolean'
+        ? req.body.stopOnFailure
+        : typeof req.body.stopOnFailure === 'string'
+          ? req.body.stopOnFailure.toLowerCase() !== 'false'
+          : false;
+
     const viewportSize = req.body.viewportSize && typeof req.body.viewportSize === 'object'
       ? {
           width: Number.parseInt(req.body.viewportSize.width, 10),
@@ -69,6 +76,7 @@ router.post('/', async (req, res) => {
       headed: headedPreference,
       speed: speedPreference,
       keepOpen: keepBrowserOpen,
+      stopOnFailure,
       viewportSize
     });
     return res.status(202).json({ runId: session.id });

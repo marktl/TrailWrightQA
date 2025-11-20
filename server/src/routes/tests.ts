@@ -428,6 +428,55 @@ router.patch('/:id/metadata', async (req, res) => {
   }
 });
 
+router.put('/:id/steps', async (req, res) => {
+  try {
+    const testId = req.params.id;
+    const { steps } = req.body ?? {};
+
+    if (!Array.isArray(steps)) {
+      return res.status(400).json({ error: 'Steps must be an array' });
+    }
+
+    // Load existing test
+    const test = await loadTest(CONFIG.DATA_DIR, testId);
+
+    // Update metadata with new steps
+    const updatedMetadata = {
+      ...test.metadata,
+      steps
+    };
+
+    // Regenerate test code using TestCodeGenerator
+    const { TestCodeGenerator } = await import('../playwright/testCodeGenerator.js');
+    const generator = new TestCodeGenerator();
+
+    const newCode = generator.generateTestFile({
+      testId: test.id,
+      testName: test.metadata.name,
+      startUrl: test.metadata.startUrl || '',
+      steps,
+      variables: test.metadata.variables,
+      metadata: {
+        ...test.metadata,
+        steps
+      }
+    });
+
+    // Save updated test
+    const updatedTest: Test = {
+      ...test,
+      metadata: updatedMetadata,
+      code: newCode
+    };
+
+    await saveTest(CONFIG.DATA_DIR, updatedTest);
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Failed to update test steps' });
+  }
+});
+
 // Import a previously exported test archive
 router.post('/import', zipUpload, async (req, res) => {
   try {

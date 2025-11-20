@@ -173,12 +173,26 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(metadata)
     }),
+  updateTestSteps: (
+    id: string,
+    steps: Array<{ number: number; qaSummary: string; playwrightCode: string }>
+  ) =>
+    fetchApi<{ success: boolean }>(`/tests/${id}/steps`, {
+      method: 'PUT',
+      body: JSON.stringify({ steps })
+    }),
+  generateStepFromPrompt: (prompt: string) =>
+    fetchApi<{ qaSummary: string; playwrightCode: string }>('/ai/generate-step', {
+      method: 'POST',
+      body: JSON.stringify({ prompt })
+    }),
   runTest: (
     testId: string,
     options?: {
       headed?: boolean;
       speed?: number;
       keepBrowserOpen?: boolean;
+      stopOnFailure?: boolean;
       viewportSize?: { width: number; height: number };
     }
   ) =>

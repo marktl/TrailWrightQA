@@ -91,6 +91,7 @@ export default function TestWorkspace() {
   const [headedNotice, setHeadedNotice] = useState<string | null>(null);
   const [speed, setSpeed] = useState(1);
   const [keepBrowserOpen, setKeepBrowserOpen] = useState(false);
+  const [stopOnFailure, setStopOnFailure] = useState(false);
   const [selectedScreenSize, setSelectedScreenSize] = useState('');
   const [startingRun, setStartingRun] = useState(false);
 
@@ -115,6 +116,15 @@ export default function TestWorkspace() {
   const [variableData, setVariableData] = useState<VariableRow[]>([]);
   const [loadingVariables, setLoadingVariables] = useState(false);
   const [showCSVImport, setShowCSVImport] = useState(false);
+
+  // Step editing state
+  const [editedSteps, setEditedSteps] = useState<Array<{number: number; qaSummary: string; playwrightCode: string}>>([]);
+  const [stepsModified, setStepsModified] = useState(false);
+  const [savingSteps, setSavingSteps] = useState(false);
+  const [insertAfterStep, setInsertAfterStep] = useState<number | null>(null);
+  const [insertPrompt, setInsertPrompt] = useState('');
+  const [insertingSteps, setInsertingSteps] = useState(false);
+  const [insertedStepsPreview, setInsertedStepsPreview] = useState<Array<{qaSummary: string; playwrightCode: string}>>([]);
 
   const refreshRuns = useCallback(async () => {
     if (!testId) return;
@@ -276,6 +286,14 @@ export default function TestWorkspace() {
     }
   }, [activeTab, testId, loadVariables]);
 
+  // Initialize edited steps when test is loaded
+  useEffect(() => {
+    if (test?.metadata?.steps) {
+      setEditedSteps([...test.metadata.steps]);
+      setStepsModified(false);
+    }
+  }, [test?.metadata?.steps]);
+
   const handleStreamEvent = useCallback((event: RunStreamEvent) => {
     if (event.type === 'hydrate') {
       setRunState(event.payload);
@@ -433,7 +451,7 @@ export default function TestWorkspace() {
         ? SCREEN_SIZE_PRESETS.find((p) => p.id === selectedScreenSize)?.viewport
         : undefined;
 
-      const { runId } = await api.runTest(testId, { headed, speed, keepBrowserOpen, viewportSize });
+      const { runId } = await api.runTest(testId, { headed, speed, keepBrowserOpen, stopOnFailure, viewportSize });
       setActiveRunId(runId);
       setRunState(null);
       setTimeout(() => {
@@ -550,6 +568,108 @@ export default function TestWorkspace() {
       const message = err instanceof Error ? err.message : 'Unable to open Playwright trace';
       setError(message);
     }
+  }
+
+  function handleDeleteStep(stepNumber: number) {
+    const updatedSteps = editedSteps
+      .filter(s => s.number !== stepNumber)
+      .map((s, index) => ({
+        ...s,
+        number: index + 1  // Renumber steps
+      }));
+    setEditedSteps(updatedSteps);
+    setStepsModified(true);
+  }
+
+  async function handleSaveSteps() {
+    if (!testId || !test) return;
+
+    setSavingSteps(true);
+    try {
+      // Regenerate test code with updated steps
+      await api.updateTestSteps(testId, editedSteps);
+
+      // Refresh test data
+      const updatedTest = await api.getTest(testId);
+      setTest(updatedTest);
+      setStepsModified(false);
+
+      // Show success message
+      setMetaMessage('Steps saved successfully!');
+      setTimeout(() => setMetaMessage(null), 3000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save steps';
+      setMetaMessage(`Error: ${message}`);
+    } finally {
+      setSavingSteps(false);
+    }
+  }
+
+  function handleOpenInsertModal(afterStepNumber: number) {
+    setInsertAfterStep(afterStepNumber);
+    setInsertPrompt('');
+    setInsertedStepsPreview([]);
+  }
+
+  function handleCloseInsertModal() {
+    setInsertAfterStep(null);
+    setInsertPrompt('');
+    setInsertedStepsPreview([]);
+  }
+
+  async function handleGenerateInsertStep(event: FormEvent) {
+    event.preventDefault();
+    if (!insertPrompt.trim()) return;
+
+    setInsertingSteps(true);
+    try {
+      // Use AI to generate Playwright code from prompt
+      const response = await api.generateStepFromPrompt(insertPrompt.trim());
+
+      // Add to preview
+      setInsertedStepsPreview((prev) => [
+        ...prev,
+        {
+          qaSummary: response.qaSummary,
+          playwrightCode: response.playwrightCode
+        }
+      ]);
+
+      // Clear prompt for next instruction
+      setInsertPrompt('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to generate step';
+      setMetaMessage(`Error: ${message}`);
+      setTimeout(() => setMetaMessage(null), 3000);
+    } finally {
+      setInsertingSteps(false);
+    }
+  }
+
+  function handleConfirmInsertSteps() {
+    if (insertAfterStep === null || insertedStepsPreview.length === 0) return;
+
+    // Insert the generated steps after the specified step
+    const insertIndex = insertAfterStep; // Insert after this step number
+    const beforeSteps = editedSteps.slice(0, insertIndex);
+    const afterSteps = editedSteps.slice(insertIndex);
+
+    // Add new steps without numbers (will renumber below)
+    const newSteps = insertedStepsPreview.map((step) => ({
+      number: 0, // Temporary
+      qaSummary: step.qaSummary,
+      playwrightCode: step.playwrightCode
+    }));
+
+    // Combine and renumber all steps
+    const combined = [...beforeSteps, ...newSteps, ...afterSteps].map((step, index) => ({
+      ...step,
+      number: index + 1
+    }));
+
+    setEditedSteps(combined);
+    setStepsModified(true);
+    handleCloseInsertModal();
   }
 
   const logItems = useMemo(() => runState?.logs ?? [], [runState?.logs]);
@@ -713,39 +833,43 @@ export default function TestWorkspace() {
                 />
               </div>
 
-              <div className="mt-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-gray-700">Goal</label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRegenUrl(defaultStartUrl || '');
-                      setRegenMaxSteps('20');
-                      setRegenMessage(null);
-                      setShowRegenModal(true);
-                    }}
-                    className="text-xs font-medium text-blue-600 hover:text-blue-800"
-                  >
-                    Copy to new AI test
-                  </button>
+              {goal && goal !== description && (
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-gray-700">Goal</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRegenUrl(defaultStartUrl || '');
+                        setRegenMaxSteps('20');
+                        setRegenMessage(null);
+                        setShowRegenModal(true);
+                      }}
+                      className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                    >
+                      Copy to new AI test
+                    </button>
+                  </div>
+                  <textarea
+                    value={goal}
+                    readOnly
+                    rows={2}
+                    className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
+                  />
                 </div>
-                <textarea
-                  value={goal}
-                  readOnly
-                  rows={2}
-                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
-                />
-              </div>
+              )}
 
-              <div className="mt-4 space-y-2">
-                <label className="text-sm font-medium text-gray-700">Success Criteria</label>
-                <textarea
-                  value={successCriteria}
-                  readOnly
-                  rows={3}
-                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
-                />
-              </div>
+              {successCriteria && (
+                <div className="mt-4 space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Success Criteria</label>
+                  <textarea
+                    value={successCriteria}
+                    readOnly
+                    rows={3}
+                    className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
+                  />
+                </div>
+              )}
 
               <div className="mt-4 flex items-center justify-between">
                 <button
@@ -792,187 +916,9 @@ export default function TestWorkspace() {
                   )}
                 </div>
               )}
+
             </div>
 
-            <div className="rounded-lg bg-white p-6 shadow">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-xl font-semibold text-gray-900">Live Run</h2>
-                {runState?.result && (
-                  <span className="text-sm text-gray-500">
-                    Finished {formatTimestamp(runState.result.endedAt)} · {formatDuration(runState.result.duration)}
-                  </span>
-                )}
-              </div>
-
-              {activeRunId ? (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      onClick={() => handleControl('resume')}
-                      disabled={currentStatus !== 'paused' || pendingAction !== null}
-                      className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40"
-                    >
-                      Resume
-                    </button>
-                    <button
-                      onClick={() => handleControl('pause')}
-                      disabled={currentStatus !== 'running' || pendingAction !== null}
-                      className="rounded-lg bg-amber-500 px-4 py-2 text-white disabled:opacity-40"
-                    >
-                      Pause
-                    </button>
-                    <button
-                      onClick={() => handleControl('stop')}
-                      disabled={!['running', 'paused', 'queued'].includes(currentStatus) || pendingAction !== null}
-                      className="rounded-lg bg-red-600 px-4 py-2 text-white disabled:opacity-40"
-                    >
-                      Stop
-                    </button>
-                    <button
-                      onClick={handleOpenTrace}
-                      disabled={!runState?.result?.tracePath}
-                      className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 disabled:opacity-40"
-                    >
-                      Open Trace
-                    </button>
-                  </div>
-
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <div>
-                      <h3 className="text-sm font-semibold uppercase text-gray-500">Timeline</h3>
-                      <div className="mt-2 space-y-2">
-                        {orderedSteps.length === 0 && (
-                          <p className="text-sm text-gray-500">No steps recorded yet.</p>
-                        )}
-                        {orderedSteps.map((step) => (
-                          <div
-                            key={step.id}
-                            className={`rounded-lg border px-3 py-2 text-sm ${stepStatusStyles[step.status] || ''}`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="font-medium text-gray-900">{step.title}</span>
-                              <span className="text-xs text-gray-600">{formatTimestamp(step.startedAt)}</span>
-                            </div>
-                            {step.error && (
-                              <p className="mt-2 text-xs text-red-600">{step.error}</p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-semibold uppercase text-gray-500">Logs</h3>
-                      <div
-                        ref={logsRef}
-                        className="mt-2 h-48 overflow-y-auto rounded-lg border bg-gray-50 p-3 text-xs font-mono text-gray-700"
-                      >
-                        {logItems.length === 0 && <p className="text-gray-500">No output yet…</p>}
-                        {logItems.map((log) => (
-                          <div key={log.id} className="mb-1">
-                            <span className="text-gray-400">[{formatTimestamp(log.timestamp)}]</span>{' '}
-                            <span className="uppercase text-gray-500">{log.stream}</span>: {log.message}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="text-sm font-semibold uppercase text-gray-500">Screenshot Timeline</h3>
-                    {screenshotDetails.length === 0 ? (
-                      <p className="mt-2 text-sm text-gray-500">
-                        No screenshots captured for this run.
-                      </p>
-                    ) : (
-                      <div className="mt-3 space-y-3">
-                        {screenshotDetails.map((shot, index) => (
-                          <div
-                            key={`${shot.path}-${index}`}
-                            className="flex flex-col gap-3 rounded-lg border border-gray-200 p-3 sm:flex-row sm:items-center"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-semibold text-gray-900">
-                                {shot.stepTitle || `Screenshot ${index + 1}`}
-                              </p>
-                              {shot.testTitle && (
-                                <p className="text-xs text-gray-500">{shot.testTitle}</p>
-                              )}
-                              {shot.capturedAt && (
-                                <p className="text-xs text-gray-400">
-                                  {formatTimestamp(shot.capturedAt)}
-                                </p>
-                              )}
-                              <a
-                                href={shot.path}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-xs text-blue-600 hover:text-blue-800"
-                              >
-                                Open full size →
-                              </a>
-                            </div>
-                            <a
-                              href={shot.path}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="block overflow-hidden rounded-lg border border-gray-200"
-                            >
-                              <img
-                                src={shot.path}
-                                alt={shot.stepTitle || `Run screenshot ${index + 1}`}
-                                className="h-28 w-40 object-cover"
-                                loading="lazy"
-                              />
-                            </a>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <h3 className="text-sm font-semibold uppercase text-gray-500">Ask the assistant</h3>
-                    <form className="mt-2 flex gap-2" onSubmit={handleSendChat}>
-                      <input
-                        type="text"
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        placeholder="Ask why a step failed, how to harden the test, etc."
-                        className="flex-1 rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                      <button
-                        type="submit"
-                        disabled={sendingChat || !activeRunId}
-                        className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40"
-                      >
-                        {sendingChat ? 'Sending…' : 'Send'}
-                      </button>
-                    </form>
-                    <div
-                      ref={chatRef}
-                      className="mt-3 max-h-40 overflow-y-auto rounded-lg border bg-gray-50 p-3 text-sm text-gray-800"
-                    >
-                      {chatItems.length === 0 && (
-                        <p className="text-gray-500">AI responses will appear here.</p>
-                      )}
-                      {chatItems.map((msg) => (
-                        <div key={msg.id} className="mb-2">
-                          <p className="text-xs uppercase text-gray-500">{msg.role}</p>
-                          <p>{msg.message}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-gray-600">
-                  Start a run to see live steps, logs, and AI assistance.
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="space-y-6">
             <div className="rounded-lg bg-white p-6 shadow">
               <h2 className="text-lg font-semibold text-gray-900">Run Options</h2>
               <p className="text-sm text-gray-500">TrailWright executes tests locally using your browser.</p>
@@ -1066,8 +1012,292 @@ export default function TestWorkspace() {
                   </span>
                 </span>
               </label>
+              <label className="mt-4 flex items-start gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={stopOnFailure}
+                  onChange={(e) => setStopOnFailure(e.target.checked)}
+                  className="mt-1 rounded"
+                />
+                <span>
+                  Stop test on first failure
+                  <span className="block text-xs text-gray-500">
+                    Automatically stop test execution when any step fails instead of continuing.
+                  </span>
+                </span>
+              </label>
             </div>
 
+            <div className="rounded-lg bg-white p-6 shadow">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-xl font-semibold text-gray-900">Test</h2>
+                {runState?.result && (
+                  <span className="text-sm text-gray-500">
+                    Finished {formatTimestamp(runState.result.endedAt)} · {formatDuration(runState.result.duration)}
+                  </span>
+                )}
+              </div>
+
+              {activeRunId ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={() => handleControl('resume')}
+                      disabled={currentStatus !== 'paused' || pendingAction !== null}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40"
+                    >
+                      Resume
+                    </button>
+                    <button
+                      onClick={() => handleControl('pause')}
+                      disabled={currentStatus !== 'running' || pendingAction !== null}
+                      className="rounded-lg bg-amber-500 px-4 py-2 text-white disabled:opacity-40"
+                    >
+                      Pause
+                    </button>
+                    <button
+                      onClick={() => handleControl('stop')}
+                      disabled={!['running', 'paused', 'queued'].includes(currentStatus) || pendingAction !== null}
+                      className="rounded-lg bg-red-600 px-4 py-2 text-white disabled:opacity-40"
+                    >
+                      Stop
+                    </button>
+                    <button
+                      onClick={handleOpenTrace}
+                      disabled={!runState?.result?.tracePath}
+                      className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 disabled:opacity-40"
+                    >
+                      Open Trace
+                    </button>
+                  </div>
+
+                  {/* Test Steps with Real-Time Status */}
+                  <div className="space-y-3">
+                    {editedSteps && editedSteps.length > 0 ? (
+                      editedSteps.map((step) => {
+                        // Find matching runtime step by title (qaSummary)
+                        const runtimeStep = orderedSteps.find(s => s.title === step.qaSummary);
+                        const status = runtimeStep?.status || 'pending';
+                        const error = runtimeStep?.error;
+
+                        // Determine if step is currently running (has started but not finished)
+                        const isRunning = runtimeStep?.startedAt && status === 'pending';
+
+                        // Find screenshots for this step
+                        const stepScreenshots = screenshotDetails.filter(s => s.stepTitle === step.qaSummary);
+
+                        return (
+                          <div
+                            key={step.number}
+                            className={`border-2 rounded-lg p-4 ${
+                              status === 'passed'
+                                ? 'border-emerald-400 bg-emerald-50'
+                                : status === 'failed'
+                                ? 'border-red-400 bg-red-50'
+                                : isRunning
+                                ? 'border-amber-400 bg-amber-50'
+                                : 'border-gray-200 bg-white'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
+                                    {step.number}
+                                  </span>
+                                  <p className="font-medium text-gray-900">{step.qaSummary}</p>
+                                </div>
+                                {runtimeStep?.startedAt && (
+                                  <p className="text-xs text-gray-500 ml-8">
+                                    {formatTimestamp(runtimeStep.startedAt)}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex-shrink-0">
+                                {status === 'passed' && (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+                                    ✓ Pass
+                                  </span>
+                                )}
+                                {status === 'failed' && (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                    ✗ Fail
+                                  </span>
+                                )}
+                                {isRunning && (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                                    ▶ Running
+                                  </span>
+                                )}
+                                {!isRunning && status === 'pending' && (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                                    ⋯ Pending
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Error Display */}
+                            {error && (
+                              <div className="mt-3 p-3 bg-red-100 border border-red-300 rounded text-sm text-red-900">
+                                <p className="font-medium mb-1">Error:</p>
+                                <p className="whitespace-pre-wrap text-xs">{error}</p>
+                              </div>
+                            )}
+
+                            {/* AI Error Summary */}
+                            {runState?.result?.errorSummary && status === 'failed' && (
+                              <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900">
+                                <p className="font-medium mb-1">💡 What went wrong:</p>
+                                <p>{runState.result.errorSummary}</p>
+                              </div>
+                            )}
+
+                            {/* Screenshots for this step */}
+                            {stepScreenshots.length > 0 && (
+                              <div className="mt-3 space-y-2">
+                                {stepScreenshots.map((shot, idx) => (
+                                  <div key={`${shot.path}-${idx}`} className="flex items-center gap-3">
+                                    <a
+                                      href={shot.path}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="block overflow-hidden rounded border border-gray-300"
+                                    >
+                                      <img
+                                        src={shot.path}
+                                        alt={shot.stepTitle || 'Screenshot'}
+                                        className="h-20 w-32 object-cover"
+                                        loading="lazy"
+                                      />
+                                    </a>
+                                    <a
+                                      href={shot.path}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-xs text-blue-600 hover:text-blue-800"
+                                    >
+                                      Open full size →
+                                    </a>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="text-sm text-gray-500">No steps recorded for this test.</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {!editedSteps || editedSteps.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-gray-600">
+                      <p className="mb-2">No test steps defined.</p>
+                      <p className="text-sm text-gray-500">Create steps using AI generation to get started.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                        <p className="text-sm text-blue-800">
+                          <strong>Edit Test Steps:</strong> Delete unwanted steps or insert new ones using AI.
+                          After making changes, click "Save Changes" to regenerate the test code.
+                        </p>
+                      </div>
+
+                      {stepsModified && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+                          <p className="text-sm text-amber-800">
+                            ⚠️ <strong>Unsaved changes</strong> - Don't forget to save your changes!
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="space-y-3">
+                        {editedSteps.map((step) => (
+                          <div
+                            key={step.number}
+                            className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-medium">
+                                    {step.number}
+                                  </span>
+                                  <p className="font-medium text-gray-900">{step.qaSummary}</p>
+                                </div>
+                                <details className="mt-2">
+                                  <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700">
+                                    Show Playwright code
+                                  </summary>
+                                  <pre className="mt-2 text-xs bg-gray-900 text-green-300 p-2 rounded overflow-x-auto">
+                                    {step.playwrightCode}
+                                  </pre>
+                                </details>
+                              </div>
+                              <div className="flex flex-col gap-2">
+                                <button
+                                  onClick={() => handleOpenInsertModal(step.number)}
+                                  className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 border border-green-200"
+                                  title="Insert step after this one"
+                                >
+                                  + Insert
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    if (confirm(`Delete step ${step.number}: "${step.qaSummary}"?`)) {
+                                      handleDeleteStep(step.number);
+                                    }
+                                  }}
+                                  className="text-xs px-2 py-1 bg-red-50 text-red-700 rounded hover:bg-red-100 border border-red-200"
+                                  title="Delete this step"
+                                >
+                                  ✕ Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-200">
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={handleSaveSteps}
+                            disabled={!stepsModified || savingSteps}
+                            className="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {savingSteps ? 'Saving…' : 'Save Changes'}
+                          </button>
+                          {stepsModified && (
+                            <button
+                              onClick={() => {
+                                if (test?.metadata?.steps) {
+                                  setEditedSteps([...test.metadata.steps]);
+                                  setStepsModified(false);
+                                }
+                              }}
+                              className="text-sm text-gray-600 hover:text-gray-800"
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          Saving will regenerate the test code with your changes
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-6">
             <div className="rounded-lg bg-white p-6 shadow">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-gray-900">Run History</h2>
@@ -1180,6 +1410,95 @@ export default function TestWorkspace() {
           variables={variables}
           onImport={handleImportCSV}
         />
+
+        {/* Insert Step Modal */}
+        {insertAfterStep !== null && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+              <div className="p-6 border-b border-gray-200">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-semibold text-gray-900">
+                    Insert Steps After Step {insertAfterStep}
+                  </h2>
+                  <button
+                    onClick={handleCloseInsertModal}
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <p className="mt-2 text-sm text-gray-600">
+                  Type what you want the test to do. AI will generate Playwright code for you.
+                </p>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                {insertedStepsPreview.length > 0 && (
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-gray-700">Generated Steps:</h3>
+                    {insertedStepsPreview.map((step, index) => (
+                      <div key={index} className="border border-green-200 rounded-lg p-3 bg-green-50">
+                        <p className="font-medium text-gray-900">{step.qaSummary}</p>
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700">
+                            Show code
+                          </summary>
+                          <pre className="mt-2 text-xs bg-gray-900 text-green-300 p-2 rounded overflow-x-auto">
+                            {step.playwrightCode}
+                          </pre>
+                        </details>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <form onSubmit={handleGenerateInsertStep} className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      What should the test do?
+                    </label>
+                    <input
+                      type="text"
+                      value={insertPrompt}
+                      onChange={(e) => setInsertPrompt(e.target.value)}
+                      placeholder='e.g., "Click the submit button" or "Fill email field with test@example.com"'
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      disabled={insertingSteps}
+                      autoFocus
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={!insertPrompt.trim() || insertingSteps}
+                    className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {insertingSteps ? 'Generating...' : 'Generate Step'}
+                  </button>
+                </form>
+              </div>
+
+              <div className="p-6 border-t border-gray-200 bg-gray-50">
+                <div className="flex items-center justify-between gap-3">
+                  <button
+                    onClick={handleCloseInsertModal}
+                    className="px-4 py-2 text-gray-700 hover:text-gray-900"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmInsertSteps}
+                    disabled={insertedStepsPreview.length === 0}
+                    className="rounded-lg bg-green-600 px-6 py-2 text-white hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Insert {insertedStepsPreview.length} Step{insertedStepsPreview.length !== 1 ? 's' : ''}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -11,6 +11,7 @@ import configRouter from './routes/config.js';
 import generateRouter from './routes/generate.js';
 import credentialsRouter from './routes/credentials.js';
 import variablesRouter from './routes/variables.js';
+import aiRouter from './routes/ai.js';
 
 const app = express();
 const CLIENT_DIST_DIR = path.resolve(process.cwd(), '../client/dist');
@@ -589,6 +590,7 @@ app.use('/api/runs', runsRouter);
 app.use('/api/config', configRouter);
 app.use('/api/generate', generateRouter);
 app.use('/api/credentials', credentialsRouter);
+app.use('/api/ai', aiRouter);
 
 if (hasClientBuild) {
   // SPA fallback: serve built index.html for non-API GET requests

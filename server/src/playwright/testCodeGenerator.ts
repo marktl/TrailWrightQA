@@ -75,18 +75,21 @@ import { join } from 'path';`;
    */
   private generateSimpleTest(testName: string, startUrl: string, steps: RecordedStep[]): string {
     const startUrlLiteral = JSON.stringify(startUrl);
-    const stepComments = steps
-      .map((step) => `  // ${step.stepNumber}. ${step.qaSummary}`)
-      .join('\n');
 
-    const stepCode = steps.map((step) => `  ${step.playwrightCode}`).join('\n');
+    // Wrap each step in test.step() with QA summary as the step name
+    const stepCode = steps
+      .map((step) => {
+        const escapedSummary = this.escapeString(step.qaSummary);
+        return `  await test.step('${escapedSummary}', async () => {
+    ${step.playwrightCode}
+  });`;
+      })
+      .join('\n\n');
 
     return `
 test('${this.escapeString(testName)}', async ({ page }) => {
   // Navigate to starting URL
   await page.goto(${startUrlLiteral});
-
-${stepComments}
 
 ${stepCode}
 });`;
@@ -108,14 +111,16 @@ ${stepCode}
     // Generate test title with variable interpolation
     const titleInterpolation = this.generateTitleInterpolation(variables);
 
-    // Generate step code with potential variable references
-    const stepComments = steps
-      .map((step) => `    // ${step.stepNumber}. ${step.qaSummary}`)
-      .join('\n');
-
+    // Wrap each step in test.step() with QA summary as the step name
     const stepCode = steps
-      .map((step) => `    ${this.injectVariablesIntoCode(step.playwrightCode)}`)
-      .join('\n');
+      .map((step) => {
+        const escapedSummary = this.escapeString(step.qaSummary);
+        const code = this.injectVariablesIntoCode(step.playwrightCode);
+        return `    await test.step('${escapedSummary}', async () => {
+      ${code}
+    });`;
+      })
+      .join('\n\n');
 
     return `
 ${dataPath}
@@ -124,8 +129,6 @@ for (const row of testData) {
   test(\`${titleInterpolation}\`, async ({ page }) => {
     // Navigate to starting URL
     await page.goto(${startUrlLiteral});
-
-${stepComments}
 
 ${stepCode}
   });

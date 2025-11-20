@@ -400,7 +400,7 @@ export class LiveRunSession {
 export async function startLiveRun(
   dataDir: string,
   testId: string,
-  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean; viewportSize?: { width: number; height: number } }
+  preferences?: { headed?: boolean; speed?: number; keepOpen?: boolean; stopOnFailure?: boolean; viewportSize?: { width: number; height: number } }
 ): Promise<LiveRunSession> {
   const context = await createRunExecutionContext(dataDir, testId, preferences);
   const npx = await resolveNpxInvocation();
@@ -416,6 +416,9 @@ export async function startLiveRun(
   const args = [...npx.argsPrefix, 'playwright', 'test', relativeTestPath, '--workers=1'];
   if (context.options.headed) {
     args.push('--headed');
+  }
+  if (preferences?.stopOnFailure) {
+    args.push('--max-failures=1');
   }
 
   const env = {
