@@ -125,6 +125,9 @@ export default function TestWorkspace() {
   const [insertPrompt, setInsertPrompt] = useState('');
   const [insertingSteps, setInsertingSteps] = useState(false);
   const [insertedStepsPreview, setInsertedStepsPreview] = useState<Array<{qaSummary: string; playwrightCode: string}>>([]);
+  const [insertionSessionId, setInsertionSessionId] = useState<string | null>(null);
+  const [initializingInsertion, setInitializingInsertion] = useState(false);
+  const [insertionError, setInsertionError] = useState<string | null>(null);
 
   const refreshRuns = useCallback(async () => {
     if (!testId) return;
@@ -590,7 +593,7 @@ export default function TestWorkspace() {
       await api.updateTestSteps(testId, editedSteps);
 
       // Refresh test data
-      const updatedTest = await api.getTest(testId);
+      const { test: updatedTest } = await api.getTest(testId);
       setTest(updatedTest);
       setStepsModified(false);
 
@@ -605,26 +608,56 @@ export default function TestWorkspace() {
     }
   }
 
-  function handleOpenInsertModal(afterStepNumber: number) {
+  async function handleOpenInsertModal(afterStepNumber: number) {
+    if (!testId) return;
+
     setInsertAfterStep(afterStepNumber);
     setInsertPrompt('');
     setInsertedStepsPreview([]);
+    setInsertionError(null);
+    setInitializingInsertion(true);
+
+    try {
+      // Start insertion session - this will replay the test and open browser
+      const response = await api.startStepInsertion(testId, afterStepNumber);
+      setInsertionSessionId(response.sessionId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to start insertion session';
+      setInsertionError(message);
+      setMetaMessage(`Error: ${message}`);
+      setTimeout(() => setMetaMessage(null), 5000);
+    } finally {
+      setInitializingInsertion(false);
+    }
   }
 
-  function handleCloseInsertModal() {
+  async function handleCloseInsertModal() {
+    // Close insertion session if active
+    if (insertionSessionId) {
+      try {
+        await api.closeStepInsertion(insertionSessionId);
+      } catch (err) {
+        console.error('Failed to close insertion session:', err);
+      }
+      setInsertionSessionId(null);
+    }
+
     setInsertAfterStep(null);
     setInsertPrompt('');
     setInsertedStepsPreview([]);
+    setInsertionError(null);
   }
 
   async function handleGenerateInsertStep(event: FormEvent) {
     event.preventDefault();
-    if (!insertPrompt.trim()) return;
+    if (!insertPrompt.trim() || !insertionSessionId) return;
 
     setInsertingSteps(true);
+    setInsertionError(null);
+
     try {
-      // Use AI to generate Playwright code from prompt
-      const response = await api.generateStepFromPrompt(insertPrompt.trim());
+      // Use AI with browser context to generate Playwright code
+      const response = await api.generateStepWithContext(insertionSessionId, insertPrompt.trim());
 
       // Add to preview
       setInsertedStepsPreview((prev) => [
@@ -639,14 +672,15 @@ export default function TestWorkspace() {
       setInsertPrompt('');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to generate step';
+      setInsertionError(message);
       setMetaMessage(`Error: ${message}`);
-      setTimeout(() => setMetaMessage(null), 3000);
+      setTimeout(() => setMetaMessage(null), 5000);
     } finally {
       setInsertingSteps(false);
     }
   }
 
-  function handleConfirmInsertSteps() {
+  async function handleConfirmInsertSteps() {
     if (insertAfterStep === null || insertedStepsPreview.length === 0) return;
 
     // Insert the generated steps after the specified step
@@ -669,7 +703,9 @@ export default function TestWorkspace() {
 
     setEditedSteps(combined);
     setStepsModified(true);
-    handleCloseInsertModal();
+
+    // Close the modal and cleanup session
+    await handleCloseInsertModal();
   }
 
   const logItems = useMemo(() => runState?.logs ?? [], [runState?.logs]);
@@ -1423,15 +1459,38 @@ export default function TestWorkspace() {
                   <button
                     onClick={handleCloseInsertModal}
                     className="text-gray-400 hover:text-gray-600"
+                    disabled={initializingInsertion}
                   >
                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
                 </div>
-                <p className="mt-2 text-sm text-gray-600">
-                  Type what you want the test to do. AI will generate Playwright code for you.
-                </p>
+                {initializingInsertion ? (
+                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                      <div>
+                        <p className="text-sm font-medium text-blue-900">Preparing browser...</p>
+                        <p className="text-xs text-blue-700">Replaying test up to step {insertAfterStep}. This may take a moment.</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : insertionError ? (
+                  <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-sm font-medium text-red-900">Failed to initialize</p>
+                    <p className="text-xs text-red-700">{insertionError}</p>
+                  </div>
+                ) : insertionSessionId ? (
+                  <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-sm font-medium text-green-900">✓ Browser ready</p>
+                    <p className="text-xs text-green-700">Type instructions below. AI can see the current page state and will generate accurate steps.</p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-gray-600">
+                    Type what you want the test to do. AI will generate Playwright code for you.
+                  </p>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
@@ -1454,6 +1513,12 @@ export default function TestWorkspace() {
                   </div>
                 )}
 
+                {insertionError && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-sm text-red-800">{insertionError}</p>
+                  </div>
+                )}
+
                 <form onSubmit={handleGenerateInsertStep} className="space-y-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1464,17 +1529,17 @@ export default function TestWorkspace() {
                       value={insertPrompt}
                       onChange={(e) => setInsertPrompt(e.target.value)}
                       placeholder='e.g., "Click the submit button" or "Fill email field with test@example.com"'
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      disabled={insertingSteps}
-                      autoFocus
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      disabled={insertingSteps || !insertionSessionId || initializingInsertion}
+                      autoFocus={!!insertionSessionId && !initializingInsertion}
                     />
                   </div>
                   <button
                     type="submit"
-                    disabled={!insertPrompt.trim() || insertingSteps}
-                    className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+                    disabled={!insertPrompt.trim() || insertingSteps || !insertionSessionId || initializingInsertion}
+                    className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {insertingSteps ? 'Generating...' : 'Generate Step'}
+                    {insertingSteps ? 'Generating...' : initializingInsertion ? 'Preparing browser...' : 'Generate Step'}
                   </button>
                 </form>
               </div>

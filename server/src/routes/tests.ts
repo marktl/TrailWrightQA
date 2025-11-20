@@ -451,7 +451,7 @@ router.put('/:id/steps', async (req, res) => {
     const generator = new TestCodeGenerator();
 
     const newCode = generator.generateTestFile({
-      testId: test.id,
+      testId: test.metadata.id,
       testName: test.metadata.name,
       startUrl: test.metadata.startUrl || '',
       steps,
@@ -581,6 +581,144 @@ router.post('/import', zipUpload, async (req, res) => {
   } catch (err: any) {
     console.error('Import failed', err);
     res.status(400).json({ error: err.message || 'Unable to import test archive' });
+  }
+});
+
+// Step insertion with browser context
+const insertionSessions = new Map<string, any>(); // Will hold StepInsertionManager instances
+
+/**
+ * Start a step insertion session
+ * This will replay the test up to the specified step and keep browser open
+ */
+router.post('/:id/insert/start', async (req, res) => {
+  try {
+    const testId = req.params.id;
+    const { insertAfterStep } = req.body;
+
+    if (typeof insertAfterStep !== 'number' || insertAfterStep < 0) {
+      return res.status(400).json({ error: 'insertAfterStep must be a non-negative number' });
+    }
+
+    // Load test
+    const test = await loadTest(CONFIG.DATA_DIR, testId);
+    if (!test) {
+      return res.status(404).json({ error: 'Test not found' });
+    }
+
+    // Check if test has steps
+    if (!test.metadata.steps || test.metadata.steps.length === 0) {
+      return res.status(400).json({ error: 'Test has no steps to replay' });
+    }
+
+    // Validate insertion point
+    if (insertAfterStep > test.metadata.steps.length) {
+      return res.status(400).json({ error: `Cannot insert after step ${insertAfterStep}. Test only has ${test.metadata.steps.length} steps.` });
+    }
+
+    // Load config for AI provider
+    const config = await loadConfig(CONFIG.DATA_DIR);
+    if (!config.apiProvider || !config.apiKey) {
+      return res.status(400).json({ error: 'AI provider not configured. Configure in Settings.' });
+    }
+
+    // Import StepInsertionManager dynamically
+    const { StepInsertionManager } = await import('../playwright/stepInsertionManager.js');
+
+    // Create insertion manager
+    const manager = new StepInsertionManager(
+      test,
+      insertAfterStep,
+      config.apiProvider,
+      config.apiKey
+    );
+
+    // Initialize (replay test and keep browser open)
+    await manager.initialize();
+
+    // Store session
+    const sessionId = manager.getSessionId();
+    insertionSessions.set(sessionId, manager);
+
+    // Get loaded variables for debugging
+    const variables = manager.getVariables();
+    console.log(`[Step Insertion] Session ${sessionId} initialized with ${variables.length} variables:`, variables);
+
+    // Clean up session after 30 minutes
+    setTimeout(() => {
+      const session = insertionSessions.get(sessionId);
+      if (session) {
+        session.cleanup().catch(console.error);
+        insertionSessions.delete(sessionId);
+      }
+    }, 30 * 60 * 1000);
+
+    res.json({
+      success: true,
+      sessionId,
+      message: `Browser ready at step ${insertAfterStep}. Use /insert/${sessionId}/generate to create new steps.`,
+      variables // Include variables in response for debugging
+    });
+  } catch (error: any) {
+    console.error('Failed to start insertion session:', error);
+    res.status(500).json({ error: error.message || 'Failed to start insertion session' });
+  }
+});
+
+/**
+ * Generate a step from prompt using browser context
+ */
+router.post('/insert/:sessionId/generate', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { prompt } = req.body;
+
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    const manager = insertionSessions.get(sessionId);
+    if (!manager) {
+      return res.status(404).json({ error: 'Insertion session not found or expired' });
+    }
+
+    if (!manager.isReady()) {
+      return res.status(400).json({ error: 'Browser not ready. Session may have failed to initialize.' });
+    }
+
+    // Generate step with page context
+    const step = await manager.generateStepFromPrompt(prompt);
+
+    res.json({
+      success: true,
+      qaSummary: step.qaSummary,
+      playwrightCode: step.playwrightCode
+    });
+  } catch (error: any) {
+    console.error('Failed to generate step:', error);
+    res.status(500).json({ error: error.message || 'Failed to generate step' });
+  }
+});
+
+/**
+ * Close insertion session and cleanup browser
+ */
+router.post('/insert/:sessionId/close', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const manager = insertionSessions.get(sessionId);
+
+    if (!manager) {
+      return res.status(404).json({ error: 'Insertion session not found' });
+    }
+
+    await manager.cleanup();
+    insertionSessions.delete(sessionId);
+
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Failed to close insertion session:', error);
+    res.status(500).json({ error: error.message || 'Failed to close insertion session' });
   }
 });
 

@@ -186,6 +186,22 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ prompt })
     }),
+
+  // Step insertion with browser context
+  startStepInsertion: (testId: string, insertAfterStep: number) =>
+    fetchApi<{ success: boolean; sessionId: string; message: string }>(`/tests/${testId}/insert/start`, {
+      method: 'POST',
+      body: JSON.stringify({ insertAfterStep })
+    }),
+  generateStepWithContext: (sessionId: string, prompt: string) =>
+    fetchApi<{ success: boolean; qaSummary: string; playwrightCode: string }>(`/tests/insert/${sessionId}/generate`, {
+      method: 'POST',
+      body: JSON.stringify({ prompt })
+    }),
+  closeStepInsertion: (sessionId: string) =>
+    fetchApi<{ success: boolean }>(`/tests/insert/${sessionId}/close`, {
+      method: 'POST'
+    }),
   runTest: (
     testId: string,
     options?: {
