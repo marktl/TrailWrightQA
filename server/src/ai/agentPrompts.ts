@@ -15,9 +15,9 @@ If you CAN execute the instruction:
   "steps": [
     {
       "description": "Brief description of what this step does",
-      "action": "click" | "fill" | "select" | "press" | "goto" | "expectVisible" | "expectText" | "expectValue" | "expectUrl" | "expectTitle" | "screenshot",
+      "action": "click" | "fill" | "select" | "press" | "goto" | "wait" | "expectVisible" | "expectText" | "expectValue" | "expectUrl" | "expectTitle" | "screenshot",
       "selector": "playwright selector if applicable",
-      "value": "value if applicable"
+      "value": "value if applicable (for wait action: 'load', 'domcontentloaded', or 'networkidle')"
     }
   ]
 }
@@ -32,11 +32,12 @@ GUIDELINES:
 1. Break down the instruction into the smallest atomic steps
 2. Each step should be ONE action (one click, one fill, one navigation)
 3. For "Search Last Name Smith", create 2 steps: fill field, click search button
-4. For "Login as admin", create 3 steps: fill username, fill password, click login
+4. For "Login as admin", create steps: fill username, fill password, click login, wait for page load
 5. Use semantic selectors (getByRole, getByLabel) whenever possible
 6. If you cannot find an element or the instruction is unclear, respond with canExecute: false
 7. Keep descriptions simple and non-technical for QA staff
 8. Do NOT execute anything - just plan the steps
+9. **CRITICAL - Include wait steps:** After form submissions, button clicks that cause navigation, or any action that triggers a page reload/redirect, ALWAYS include a wait step with value 'load', 'domcontentloaded', or 'networkidle'. This prevents tests from failing due to race conditions where elements aren't ready yet.
 
 EXAMPLES:
 
@@ -56,6 +57,11 @@ Response:
       "description": "Click 'Search' button",
       "action": "click",
       "selector": "getByRole('button', { name: 'Search' })"
+    },
+    {
+      "description": "Wait for search results to load",
+      "action": "wait",
+      "value": "networkidle"
     }
   ]
 }
@@ -71,12 +77,12 @@ Response:
 export const AGENT_SYSTEM_PROMPT = `You are a Playwright automation agent. You observe web pages and decide the NEXT SINGLE ACTION to achieve the user's goal.
 
 AVAILABLE ACTIONS:
-- goto: Navigate to a URL
+- goto: Navigate to a URL (automatically waits for 'load' state)
 - click: Click an element
 - fill: Fill a text input
 - select: Select an option from dropdown
 - press: Press a keyboard key (e.g., "Enter", "Escape")
-- wait: Wait for a condition (use sparingly)
+- wait: Wait for page load state - use after form submissions, button clicks that cause navigation/reload, or any action that triggers page changes (requires value: 'load', 'domcontentloaded', or 'networkidle')
 - expectVisible: Verify an element is visible (requires selector)
 - expectText: Verify element contains text (requires selector and value with expected text)
 - expectValue: Verify input field has value (requires selector and value with expected value)
@@ -129,7 +135,14 @@ GUIDELINES:
 9. If stuck or unable to proceed, respond with action: "done" and explain in reasoning
 10. Keep reasoning simple and non-technical for QA staff
 11. Always include reasoning field
-12. Be conservative with "wait" actions - only use if absolutely necessary
+12. **PAGE LOAD WAITING - CRITICAL:**
+    - After form submissions (clicking Submit, Save, Continue, etc.), ALWAYS add a wait action for 'load' or 'networkidle'
+    - After clicking buttons that trigger navigation or page refresh, ALWAYS add a wait action
+    - After login/logout actions, ALWAYS wait for the page to load completely
+    - Use wait with value 'networkidle' when you need to ensure all resources have loaded
+    - Use wait with value 'load' when you need to ensure the page's load event has fired
+    - Use wait with value 'domcontentloaded' as a faster alternative when DOM is sufficient
+    - Tests often fail because they try to interact with elements before the page is ready - prevent this with proper waits
 13. **VALIDATION BEST PRACTICES:**
     - After critical actions (form submission, purchase, login), use validation actions to verify success
     - Use expectVisible to confirm important elements appear (success messages, confirmation pages, error alerts)
@@ -159,13 +172,19 @@ Response:
 
 User goal: "Submit the form and verify success message appears"
 Current state: Form is filled, submit button visible
-Response:
+Step 1 - Click submit:
 {
   "action": "click",
   "selector": "getByRole('button', { name: 'Submit' })",
   "reasoning": "Submit the completed form"
 }
-Next step after submission:
+Step 2 - Wait for page to load:
+{
+  "action": "wait",
+  "value": "networkidle",
+  "reasoning": "Wait for page to finish loading after form submission"
+}
+Step 3 - Verify success:
 {
   "action": "expectVisible",
   "selector": "getByText('Success')",

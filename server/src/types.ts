@@ -50,6 +50,10 @@ export interface RunResult {
   screenshots?: RunScreenshot[];
   videoPath?: string;
   error?: string;
+  errorSummary?: string;
+  steps?: StepSummary[];
+  stepCounts?: StepCounts;
+  failedStepTitles?: string[];
   rowResults?: RowResult[];
 }
 
@@ -89,6 +93,13 @@ export interface StepSummary {
   depth: number;
   category?: string;
   error?: string;
+}
+
+export interface StepCounts {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
 }
 
 export interface ChatMessage {

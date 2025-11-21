@@ -120,7 +120,7 @@ router.get('/:runId', async (req, res) => {
       startedAt: result.startedAt,
       updatedAt: result.endedAt,
       logs: [],
-      steps: [],
+      steps: result.steps ?? [],
       chat: [],
       result
     };

@@ -405,9 +405,9 @@ ${pageState}
 
 Generate the next action to fulfill the user's instruction. Return your response as JSON:
 {
-  "action": "click|fill|select|press|goto|expectVisible|expectText|done",
-  "selector": "page.getByRole(...) or page.getByLabel(...) - omit for goto/press/done",
-  "value": "value for fill/select/press actions - omit for click",
+  "action": "click|fill|select|press|goto|wait|expectVisible|expectText|done",
+  "selector": "page.getByRole(...) or page.getByLabel(...) - omit for goto/press/wait/done",
+  "value": "value for fill/select/press/wait actions (for wait: 'load', 'domcontentloaded', or 'networkidle')",
   "reasoning": "Brief explanation of why this action"
 }
 
@@ -415,6 +415,8 @@ Rules:
 - Use Playwright's recommended locators (getByRole, getByLabel, getByPlaceholder, getByText)
 - Be specific with selectors to avoid ambiguity
 - If instruction requires multiple actions, implement just the FIRST action needed
+- **CRITICAL**: After form submissions, button clicks that trigger navigation/reload, or any action that causes page changes, include a wait action with value 'load', 'domcontentloaded', or 'networkidle' to ensure page is ready before next step
+- Tests often fail because they interact with elements before the page is fully loaded - always wait after navigation-triggering actions
 - Return ONLY valid JSON, no markdown formatting
 `;
   }

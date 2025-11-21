@@ -2,7 +2,7 @@ import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import type { Dirent } from 'fs';
-import type { RunResult, RunScreenshot } from '../types.js';
+import type { RunResult, RunScreenshot, StepSummary, StepCounts } from '../types.js';
 import type { ViewportSize } from '../../../shared/types.js';
 import { serializeCredentialsBlob } from '../storage/credentials.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
@@ -38,6 +38,7 @@ export interface RunExecutionContext {
 export interface FinalizeRunOptions {
   terminated?: boolean;
   terminationReason?: string;
+  steps?: StepSummary[];
 }
 
 type ArtifactRecord = {
@@ -45,6 +46,47 @@ type ArtifactRecord = {
   sourceKey: string;
   ext: string;
 };
+
+function summarizeSteps(
+  rawSteps?: StepSummary[]
+): { steps?: StepSummary[]; counts?: StepCounts; failedTitles?: string[] } {
+  if (!rawSteps || rawSteps.length === 0) {
+    return {};
+  }
+
+  const steps = [...rawSteps].sort((a, b) => {
+    const aTime = new Date(a.startedAt || 0).getTime();
+    const bTime = new Date(b.startedAt || 0).getTime();
+    return aTime - bTime;
+  });
+
+  const counts: StepCounts = {
+    total: steps.length,
+    passed: 0,
+    failed: 0,
+    pending: 0
+  };
+  const failedTitles: string[] = [];
+
+  for (const step of steps) {
+    if (step.status === 'passed') {
+      counts.passed += 1;
+    } else if (step.status === 'failed') {
+      counts.failed += 1;
+      if (step.title) {
+        failedTitles.push(step.title);
+      }
+    } else {
+      counts.pending += 1;
+    }
+  }
+
+  return {
+    steps,
+    counts,
+    failedTitles: failedTitles.length ? Array.from(new Set(failedTitles)) : undefined
+  };
+}
 
 function normalizePath(value: string): string {
   return path.resolve(value).replace(/\\/g, '/');
@@ -252,6 +294,7 @@ export async function finalizeRunExecution(
 ): Promise<RunResult> {
   const endTime = Date.now();
   const duration = endTime - context.startTime;
+  const { steps: normalizedSteps, counts: stepCounts, failedTitles } = summarizeSteps(options.steps);
 
   // Attempt to parse Playwright JSON output
   const resultsPath = path.join(context.dataDir, 'runs', 'latest', 'results.json');
@@ -383,7 +426,10 @@ export async function finalizeRunExecution(
     screenshotPaths: screenshotPaths.length ? screenshotPaths : undefined,
     screenshots: screenshotDetails.length ? screenshotDetails : undefined,
     error,
-    errorSummary
+    errorSummary,
+    ...(normalizedSteps ? { steps: normalizedSteps } : {}),
+    ...(stepCounts ? { stepCounts } : {}),
+    ...(failedTitles ? { failedStepTitles: failedTitles } : {})
   };
 
   await fs.writeFile(path.join(context.runDir, 'result.json'), JSON.stringify(result, null, 2));

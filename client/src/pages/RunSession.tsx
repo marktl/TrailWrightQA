@@ -223,16 +223,25 @@ export default function RunSession() {
     () => (testMetadata?.steps ? [...testMetadata.steps].sort((a, b) => a.number - b.number) : []),
     [testMetadata?.steps]
   );
+  const stepsForDisplay = useMemo(() => {
+    if (run?.steps && run.steps.length > 0) {
+      return run.steps;
+    }
+    if (run?.result?.steps && run.result.steps.length > 0) {
+      return run.result.steps;
+    }
+    return [] as StepSummary[];
+  }, [run?.steps, run?.result?.steps]);
   const orderedSteps = useMemo(() => {
-    if (!run?.steps) {
+    if (!stepsForDisplay) {
       return [] as StepSummary[];
     }
-    return [...run.steps].sort((a, b) => {
+    return [...stepsForDisplay].sort((a, b) => {
       const aTime = a.startedAt ? new Date(a.startedAt).getTime() : 0;
       const bTime = b.startedAt ? new Date(b.startedAt).getTime() : 0;
       return aTime - bTime;
     });
-  }, [run?.steps]);
+  }, [stepsForDisplay]);
 
   useEffect(() => {
     if (!logsExpanded) {

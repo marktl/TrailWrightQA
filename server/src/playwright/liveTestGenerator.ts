@@ -1084,7 +1084,7 @@ export class LiveTestGenerator extends EventEmitter {
       this.log(`Error creating plan: ${error.message}`);
 
       // Add a user-friendly message to chat instead of throwing
-      this.addChatMessage('assistant', 'I encountered an issue analyzing the page. Please try rephrasing your instruction or describe what you see on the page.');
+      this.addChatMessage('assistant', 'I encountered an issue analyzing the page. Please try rephrasing your instruction or describe what you see on the page.', true);
       this.enterManualAwaitingState();
 
       // Return a non-executable plan instead of throwing
@@ -1150,32 +1150,10 @@ export class LiveTestGenerator extends EventEmitter {
       const screenshot = await this.captureStepScreenshot(stepNumber);
 
       if (!result.success) {
-        // Step failed - still record it with error info
+        // Step failed - don't record it, only notify user
         this.log(`❌ Step failed: ${result.error}`);
-
-        // Create a failed step record
-        const failedRecord = createRecordedStep(stepNumber, action, {
-          url: this.currentUrl,
-          screenshotPath: screenshot?.path,
-          screenshotData: screenshot?.data
-        });
-
-        // Inject placeholders back if using variables
-        if (this.variables.size > 0) {
-          failedRecord.playwrightCode = this.injectPlaceholdersIntoCode(failedRecord.playwrightCode);
-        }
-
-        this.recordedSteps.push(failedRecord);
-        this.nextStepNumber = this.recordedSteps.length + 1;
-
-        this.emit('event', {
-          type: 'step_recorded',
-          timestamp: new Date().toISOString(),
-          payload: failedRecord
-        });
-
         // Add chat message about failure
-        this.addChatMessage('assistant', `Step "${plannedStep.description}" failed: ${result.error}\n\nPlease provide a new instruction or adjust your approach.`);
+        this.addChatMessage('assistant', `Step "${plannedStep.description}" failed: ${result.error}\n\nPlease provide a new instruction or adjust your approach.`, true);
         this.enterManualAwaitingState();
         this.touch();
         return;
@@ -1526,12 +1504,13 @@ export class LiveTestGenerator extends EventEmitter {
     }
   }
 
-  private addChatMessage(role: ChatMessage['role'], message: string): ChatMessage {
+  private addChatMessage(role: ChatMessage['role'], message: string, isError: boolean = false): ChatMessage {
     const chatMessage: ChatMessage = {
       id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role,
       message,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      isError
     };
 
     this.chat.push(chatMessage);
@@ -1616,7 +1595,7 @@ export class LiveTestGenerator extends EventEmitter {
     this.isPaused = true;
 
     this.log('⚠️ Timed out while deciding the next action. Waiting for your guidance.');
-    this.addChatMessage('assistant', friendlyMessage);
+    this.addChatMessage('assistant', friendlyMessage, true);
     this.updateStatus('paused');
   }
 
@@ -1645,7 +1624,7 @@ export class LiveTestGenerator extends EventEmitter {
 
     // Add AI message with manual intervention request
     const helpMessage = `I tried multiple approaches but couldn't complete this action:\n\n${summary}\n\n**What you can do:**\n1. Manually perform the action in the visible browser window\n2. Once you've completed the action, type "done" and I'll observe what you did\n3. I'll generate the test code for your action and ask you to confirm\n4. Then we'll continue with the rest of the test\n\nOr, provide specific guidance on which selector to use, or use the restart button.`;
-    this.addChatMessage('assistant', helpMessage);
+    this.addChatMessage('assistant', helpMessage, true);
   }
 
   private async handleManualInstructionFailure(
@@ -1663,7 +1642,7 @@ export class LiveTestGenerator extends EventEmitter {
       summary && summary !== error
         ? `I couldn't complete "${failedInstruction}". ${summary}`
         : `I couldn't complete "${failedInstruction}". Error: ${error}`;
-    this.addChatMessage('assistant', `${message}\n\nTry describing the element differently or reference its label/text.`);
+    this.addChatMessage('assistant', `${message}\n\nTry describing the element differently or reference its label/text.`, true);
     this.enterManualAwaitingState();
   }
 
@@ -1673,7 +1652,8 @@ export class LiveTestGenerator extends EventEmitter {
     this.log(`Step-by-step instruction "${failedInstruction}" encountered an error: ${message}`);
     this.addChatMessage(
       'assistant',
-      `Something went wrong while executing "${failedInstruction}". ${message}\nPlease adjust the instruction and try again.`
+      `Something went wrong while executing "${failedInstruction}". ${message}\nPlease adjust the instruction and try again.`,
+      true
     );
     this.enterManualAwaitingState();
   }

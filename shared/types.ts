@@ -62,6 +62,9 @@ export interface RunResult {
   videoPath?: string;
   error?: string;
   errorSummary?: string;
+  steps?: StepSummary[];
+  stepCounts?: StepCounts;
+  failedStepTitles?: string[];
   rowResults?: RowResult[];
 }
 
@@ -81,6 +84,13 @@ export interface RunScreenshot {
   description?: string;
   capturedAt?: string;
   attachmentName?: string;
+}
+
+export interface StepCounts {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
 }
 
 export type RunStatus = 'queued' | 'running' | 'paused' | 'stopped' | 'completed' | 'failed';
@@ -108,6 +118,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   message: string;
   timestamp: string;
+  isError?: boolean; // True when this message reports an error/failure requiring user help
 }
 
 // Common screen sizes for testing

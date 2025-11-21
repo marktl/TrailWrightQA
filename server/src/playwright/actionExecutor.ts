@@ -53,9 +53,23 @@ export async function executeAction(
         break;
 
       case 'wait':
-        // Simple wait - could be enhanced to wait for specific conditions
-        const waitTime = action.value ? parseInt(action.value) : 1000;
-        await page.waitForTimeout(Math.min(waitTime, 5000)); // Max 5 seconds
+        // Wait for page load state or timeout
+        if (!action.value) {
+          throw new Error('wait action requires a value (load state or milliseconds)');
+        }
+
+        // Check if value is a load state
+        const loadStates = ['load', 'domcontentloaded', 'networkidle'];
+        if (loadStates.includes(action.value.toLowerCase())) {
+          await page.waitForLoadState(action.value as 'load' | 'domcontentloaded' | 'networkidle', { timeout: 30000 });
+        } else {
+          // Fallback to timeout if numeric value provided
+          const waitTime = parseInt(action.value);
+          if (isNaN(waitTime)) {
+            throw new Error(`wait action value must be a load state (load, domcontentloaded, networkidle) or milliseconds. Got: ${action.value}`);
+          }
+          await page.waitForTimeout(Math.min(waitTime, 5000)); // Max 5 seconds
+        }
         break;
 
       case 'expectVisible':
@@ -256,8 +270,13 @@ export function generatePlaywrightCode(action: AIAction): string {
     case 'press':
       return `await page.keyboard.press('${action.value}');`;
 
-    case 'wait':
+    case 'wait': {
+      const loadStates = ['load', 'domcontentloaded', 'networkidle'];
+      if (action.value && loadStates.includes(action.value.toLowerCase())) {
+        return `await page.waitForLoadState('${action.value}');`;
+      }
       return `await page.waitForTimeout(${action.value || 1000});`;
+    }
 
     case 'expectVisible':
       return `await expect(page.${action.selector}).toBeVisible();`;
@@ -325,8 +344,22 @@ export function generateQASummary(action: AIAction): string {
     case 'press':
       return `Press ${action.value} key`;
 
-    case 'wait':
-      return 'Wait for page to load';
+    case 'wait': {
+      const loadStates = ['load', 'domcontentloaded', 'networkidle'];
+      if (action.value && loadStates.includes(action.value.toLowerCase())) {
+        switch (action.value.toLowerCase()) {
+          case 'networkidle':
+            return 'Wait for page to finish loading (network idle)';
+          case 'load':
+            return 'Wait for page to load completely';
+          case 'domcontentloaded':
+            return 'Wait for page content to load';
+          default:
+            return 'Wait for page to load';
+        }
+      }
+      return `Wait ${action.value}ms`;
+    }
 
     case 'expectVisible': {
       const elementName = extractElementName(action.selector || '');

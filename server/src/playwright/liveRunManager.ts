@@ -193,12 +193,14 @@ export class LiveRunSession {
       ? { terminated: true, terminationReason: this.terminationReason }
       : {};
 
+    const stepsSnapshot = [...this.steps];
+
     try {
       const result = await finalizeRunExecution(
         this.context,
         code,
         this.stderrAggregate,
-        options
+        { ...options, steps: stepsSnapshot }
       );
       this.result = result;
       this.process = null;

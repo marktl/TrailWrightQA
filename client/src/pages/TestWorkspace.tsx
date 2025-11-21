@@ -13,7 +13,8 @@ import type {
   StepSummary,
   RunStatus,
   RunResult,
-  RunScreenshot
+  RunScreenshot,
+  StepCounts
 } from '../../../shared/types';
 import { SCREEN_SIZE_PRESETS } from '../constants/screenSizes';
 import { VariableDataGrid } from '../components/VariableDataGrid';
@@ -65,6 +66,61 @@ function formatDuration(ms?: number) {
   return `${minutes}m ${remaining}s`;
 }
 
+function formatRunResultStatus(status: RunResult['status']): string {
+  switch (status) {
+    case 'passed':
+      return 'Passed';
+    case 'failed':
+      return 'Failed';
+    case 'skipped':
+      return 'Skipped';
+    case 'partial':
+      return 'Partial';
+    case 'stopped':
+      return 'Stopped';
+    default:
+      return status;
+  }
+}
+
+function summarizeStepData(
+  steps?: StepSummary[],
+  existingCounts?: StepCounts,
+  failedStepTitles?: string[]
+): { counts?: StepCounts; failedTitles?: string[] } {
+  if (existingCounts || (failedStepTitles && failedStepTitles.length > 0)) {
+    return {
+      counts: existingCounts ? { ...existingCounts } : undefined,
+      failedTitles: failedStepTitles && failedStepTitles.length ? [...failedStepTitles] : undefined
+    };
+  }
+
+  if (!steps || steps.length === 0) {
+    return { counts: undefined, failedTitles: undefined };
+  }
+
+  const counts: StepCounts = { total: steps.length, passed: 0, failed: 0, pending: 0 };
+  const failed = new Set<string>();
+
+  for (const step of steps) {
+    if (step.status === 'passed') {
+      counts.passed += 1;
+    } else if (step.status === 'failed') {
+      counts.failed += 1;
+      if (step.title) {
+        failed.add(step.title);
+      }
+    } else {
+      counts.pending += 1;
+    }
+  }
+
+  return {
+    counts,
+    failedTitles: failed.size ? Array.from(failed) : undefined
+  };
+}
+
 export default function TestWorkspace() {
   const navigate = useNavigate();
   const { testId } = useParams();
@@ -103,6 +159,7 @@ export default function TestWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const logsRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
+  const runDetailsRef = useRef<HTMLDivElement>(null);
   const [showRegenModal, setShowRegenModal] = useState(false);
   const [regenUrl, setRegenUrl] = useState('');
   const [regenMaxSteps, setRegenMaxSteps] = useState('20');
@@ -471,11 +528,18 @@ export default function TestWorkspace() {
   async function handleSelectRun(runId: string) {
     setActiveRunId(runId);
     setRunState(null);
+    setError(null);
     try {
       const { run } = await api.getRun(runId);
       setRunState(run);
+      runDetailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       console.warn('Unable to load run details', err);
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Unable to load run details. Ensure the run files still exist.';
+      setError(message);
     }
   }
 
@@ -563,10 +627,11 @@ export default function TestWorkspace() {
     }
   }
 
-  async function handleOpenTrace() {
-    if (!activeRunId) return;
+  async function handleOpenTrace(targetRunId?: string) {
+    const runId = targetRunId ?? activeRunId;
+    if (!runId) return;
     try {
-      await api.openTrace(activeRunId);
+      await api.openTrace(runId);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to open Playwright trace';
       setError(message);
@@ -710,16 +775,26 @@ export default function TestWorkspace() {
 
   const logItems = useMemo(() => runState?.logs ?? [], [runState?.logs]);
   const chatItems = useMemo(() => runState?.chat ?? [], [runState?.chat]);
+  const stepsForDisplay = useMemo(() => {
+    if (runState?.steps && runState.steps.length > 0) {
+      return runState.steps;
+    }
+    if (runState?.result?.steps && runState.result.steps.length > 0) {
+      return runState.result.steps;
+    }
+    return [] as StepSummary[];
+  }, [runState?.steps, runState?.result?.steps]);
+
   const orderedSteps = useMemo(() => {
-    if (!runState?.steps) {
+    if (!stepsForDisplay) {
       return [] as StepSummary[];
     }
-    return [...runState.steps].sort((a, b) => {
+    return [...stepsForDisplay].sort((a, b) => {
       const aTime = a.startedAt ? new Date(a.startedAt).getTime() : 0;
       const bTime = b.startedAt ? new Date(b.startedAt).getTime() : 0;
       return aTime - bTime;
     });
-  }, [runState?.steps]);
+  }, [stepsForDisplay]);
   const screenshotDetails: RunScreenshot[] = useMemo(() => {
     if (runState?.result?.screenshots) {
       return runState.result.screenshots;
@@ -736,9 +811,45 @@ export default function TestWorkspace() {
     }
     return [];
   }, [runState?.result?.screenshots, runState?.result?.screenshotPaths]);
+  const runStepSummary = useMemo(
+    () =>
+      summarizeStepData(
+        stepsForDisplay,
+        runState?.result?.stepCounts,
+        runState?.result?.failedStepTitles
+      ),
+    [stepsForDisplay, runState?.result?.stepCounts, runState?.result?.failedStepTitles]
+  );
 
   const currentStatus: RunStatus = runState?.status ?? 'queued';
   const testTitle = name || test?.metadata.name || 'Test Workspace';
+  const historyTotals = useMemo(() => {
+    return runs.reduce(
+      (acc, run) => {
+        if (run.status === 'passed') acc.passed += 1;
+        else if (run.status === 'failed') acc.failed += 1;
+        else if (run.status === 'stopped') acc.stopped += 1;
+        else if (run.status === 'partial') acc.partial += 1;
+        else if (run.status === 'skipped') acc.skipped += 1;
+        return acc;
+      },
+      { passed: 0, failed: 0, stopped: 0, partial: 0, skipped: 0 }
+    );
+  }, [runs]);
+
+  const topFailingSteps = useMemo(() => {
+    const counter = new Map<string, number>();
+    runs.forEach((run) => {
+      const summary = summarizeStepData(run.steps, run.stepCounts, run.failedStepTitles);
+      const failedTitles = summary.failedTitles ?? [];
+      failedTitles.forEach((title) => {
+        counter.set(title, (counter.get(title) ?? 0) + 1);
+      });
+    });
+    return Array.from(counter.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+  }, [runs]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -763,7 +874,7 @@ export default function TestWorkspace() {
 
         <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
           <div className="space-y-6">
-            <div className="rounded-lg bg-white p-6 shadow">
+            <div className="rounded-lg bg-white p-6 shadow" ref={runDetailsRef}>
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h1 className="text-3xl font-bold text-gray-900">{testTitle}</h1>
@@ -1099,12 +1210,43 @@ export default function TestWorkspace() {
                       Stop
                     </button>
                     <button
-                      onClick={handleOpenTrace}
+                      onClick={() => handleOpenTrace()}
                       disabled={!runState?.result?.tracePath}
                       className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 disabled:opacity-40"
                     >
                       Open Trace
                     </button>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+                    {runStepSummary.counts ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-4">
+                          <span className="flex items-center gap-1 text-emerald-700">
+                            ✓ {runStepSummary.counts.passed} passed
+                          </span>
+                          <span className="flex items-center gap-1 text-red-700">
+                            ✗ {runStepSummary.counts.failed} failed
+                          </span>
+                          <span className="flex items-center gap-1 text-gray-700">
+                            Σ {runStepSummary.counts.total} steps
+                          </span>
+                        </div>
+                        {runStepSummary.failedTitles && runStepSummary.failedTitles.length > 0 && (
+                          <p className="mt-2 text-xs text-red-700">
+                            Failed at: {runStepSummary.failedTitles.slice(0, 3).join(', ')}
+                            {runStepSummary.failedTitles.length > 3 ? '…' : ''}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-sm text-gray-600">Step outcomes will appear once telemetry is available.</p>
+                    )}
+                    {runState?.result?.errorSummary && (
+                      <p className="mt-2 text-xs text-amber-700">
+                        What went wrong: {runState.result.errorSummary}
+                      </p>
+                    )}
                   </div>
 
                   {/* Test Steps with Real-Time Status */}
@@ -1178,14 +1320,6 @@ export default function TestWorkspace() {
                               <div className="mt-3 p-3 bg-red-100 border border-red-300 rounded text-sm text-red-900">
                                 <p className="font-medium mb-1">Error:</p>
                                 <p className="whitespace-pre-wrap text-xs">{error}</p>
-                              </div>
-                            )}
-
-                            {/* AI Error Summary */}
-                            {runState?.result?.errorSummary && status === 'failed' && (
-                              <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900">
-                                <p className="font-medium mb-1">💡 What went wrong:</p>
-                                <p>{runState.result.errorSummary}</p>
                               </div>
                             )}
 
@@ -1349,27 +1483,102 @@ export default function TestWorkspace() {
               ) : runs.length === 0 ? (
                 <p className="mt-4 text-sm text-gray-500">No runs yet.</p>
               ) : (
-                <div className="mt-4 space-y-3">
-                  {runs.map((run) => (
-                    <div
-                      key={run.id}
-                      className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2"
-                    >
-                      <div>
-                        <p className="font-medium text-gray-900">{formatTimestamp(run.startedAt)}</p>
-                        <p className="text-sm text-gray-500">
-                          {statusLabels[run.status as RunStatus] || run.status} · {formatDuration(run.duration)}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => handleSelectRun(run.id)}
-                        className="rounded-lg border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
-                      >
-                        View
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                    <span className="flex items-center gap-1 text-emerald-700">
+                      ✓ {historyTotals.passed} pass
+                    </span>
+                    <span className="flex items-center gap-1 text-red-700">
+                      ✗ {historyTotals.failed} fail
+                    </span>
+                    {historyTotals.stopped > 0 && (
+                      <span className="flex items-center gap-1 text-amber-700">
+                        ■ {historyTotals.stopped} stopped
+                      </span>
+                    )}
+                    {(historyTotals.partial > 0 || historyTotals.skipped > 0) && (
+                      <span className="flex items-center gap-1 text-gray-700">
+                        ⋯ {historyTotals.partial + historyTotals.skipped} partial/skipped
+                      </span>
+                    )}
+                    {topFailingSteps.length > 0 ? (
+                      <span className="text-red-700">
+                        Top failing steps: {topFailingSteps.map(([title, count]) => `${title} (${count})`).join(' · ')}
+                      </span>
+                    ) : (
+                      <span className="text-gray-500">No failing steps recorded yet.</span>
+                    )}
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {runs.map((run) => {
+                      const stepSummary = summarizeStepData(
+                        run.steps,
+                        run.stepCounts,
+                        run.failedStepTitles
+                      );
+                      const isActive = activeRunId === run.id;
+
+                      return (
+                        <div
+                          key={run.id}
+                          className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2 ${
+                            isActive ? 'border-blue-300 bg-blue-50' : 'border-gray-200'
+                          }`}
+                        >
+                          <div className="flex-1">
+                            <p className="font-medium text-gray-900">{formatTimestamp(run.startedAt)}</p>
+                            <p className="text-sm text-gray-500">
+                              {formatRunResultStatus(run.status)} · {formatDuration(run.duration)}
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                              {stepSummary.counts ? (
+                                <>
+                                  <span className="flex items-center gap-1 rounded bg-emerald-50 px-2 py-1 text-emerald-700">
+                                    ✓ {stepSummary.counts.passed}
+                                  </span>
+                                  <span className="flex items-center gap-1 rounded bg-red-50 px-2 py-1 text-red-700">
+                                    ✗ {stepSummary.counts.failed}
+                                  </span>
+                                  <span className="flex items-center gap-1 rounded bg-gray-100 px-2 py-1 text-gray-700">
+                                    Σ {stepSummary.counts.total}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="text-gray-500">No step data captured</span>
+                              )}
+                              {stepSummary.failedTitles && stepSummary.failedTitles.length > 0 && (
+                                <span className="text-red-700">
+                                  Failed at {stepSummary.failedTitles.slice(0, 2).join(', ')}
+                                  {stepSummary.failedTitles.length > 2 ? '…' : ''}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end gap-2">
+                            <button
+                              onClick={() => handleSelectRun(run.id)}
+                              className={`rounded-lg border px-3 py-1 text-sm ${
+                                isActive
+                                  ? 'border-blue-500 text-blue-700 bg-blue-100'
+                                  : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                              }`}
+                            >
+                              {isActive ? 'Viewing' : 'View'}
+                            </button>
+                            {run.tracePath && (
+                              <button
+                                onClick={() => handleOpenTrace(run.id)}
+                                className="rounded-lg border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                              >
+                                Trace
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </div>
           </div>
