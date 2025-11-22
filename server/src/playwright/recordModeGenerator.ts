@@ -19,6 +19,7 @@ export class RecordModeGenerator extends EventEmitter {
   private config: RecordModeConfig;
   private recordedSteps: RecordedStep[] = [];
   private stepCounter = 0;
+  private activeInputs = new Map<string, { value: string; startTime: number; element: any }>();
 
   constructor(config: RecordModeConfig) {
     super();
@@ -69,6 +70,16 @@ export class RecordModeGenerator extends EventEmitter {
     (this.page as any).on('click', async (event: any) => {
       await this.handleClickEvent(event);
     });
+
+    // Input events (track but don't record yet)
+    (this.page as any).on('input', async (event: any) => {
+      await this.handleInputEvent(event);
+    });
+
+    // Blur events (finalize input recording)
+    (this.page as any).on('blur', async (event: any) => {
+      await this.handleBlurEvent(event);
+    });
   }
 
   private async handleClickEvent(event: any): Promise<void> {
@@ -94,6 +105,44 @@ export class RecordModeGenerator extends EventEmitter {
     this.emit('step', step);
   }
 
+  private async handleInputEvent(event: any): Promise<void> {
+    const selector = await this.generateUniqueSelector(event.target);
+    this.activeInputs.set(selector, {
+      value: event.target?.value || event.data || '',
+      startTime: Date.now(),
+      element: event.target
+    });
+  }
+
+  private async handleBlurEvent(event: any): Promise<void> {
+    const selector = await this.generateUniqueSelector(event.target);
+    const inputData = this.activeInputs.get(selector);
+
+    if (!inputData) return;
+
+    const elementInfo = await this.captureElementInfo(inputData.element);
+    const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
+
+    const step: RecordedStep = {
+      stepNumber: ++this.stepCounter,
+      interactionType: 'fill',
+      elementInfo,
+      qaSummary: `Enter '${inputData.value}' into ${elementInfo.name || 'input'}`,
+      playwrightCode: `await page.${elementInfo.selector}.fill('${inputData.value}');`,
+      timestamp: new Date().toISOString(),
+      url: currentUrl
+    };
+
+    this.recordedSteps.push(step);
+    this.state.recordedSteps = [...this.recordedSteps];
+    this.state.steps = [...this.recordedSteps];
+    this.state.stepsTaken = this.recordedSteps.length;
+    this.state.updatedAt = new Date().toISOString();
+    this.activeInputs.delete(selector);
+
+    this.emit('step', step);
+  }
+
   private async captureElementInfo(element: any): Promise<{
     role?: string;
     name?: string;
@@ -112,6 +161,11 @@ export class RecordModeGenerator extends EventEmitter {
       name,
       selector
     };
+  }
+
+  private async generateUniqueSelector(element: any): Promise<string> {
+    const label = element?.getAttribute?.('aria-label') || element?.getAttribute?.('name') || '';
+    return `${element?.tagName || 'element'}-${label}`;
   }
 
   async cleanup(): Promise<void> {

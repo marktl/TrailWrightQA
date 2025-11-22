@@ -87,4 +87,47 @@ describe('RecordModeGenerator', () => {
       stepNumber: 1,
     });
   });
+
+  it('should capture fill events on blur', async () => {
+    const mockInput = {
+      tagName: 'INPUT',
+      getAttribute: vi.fn((attr) => {
+        if (attr === 'type') return 'email';
+        if (attr === 'aria-label') return 'Email';
+        return null;
+      }),
+      value: 'test@example.com',
+    };
+
+    generator = new RecordModeGenerator({
+      sessionId: 'test-session-123',
+      name: 'Test Recording',
+      startUrl: 'https://example.com',
+      aiProvider: 'anthropic',
+    });
+
+    await generator.start(mockBrowser);
+
+    const inputHandler = (mockPage.on as any).mock.calls.find(
+      ([event]) => event === 'input'
+    )?.[1];
+    const blurHandler = (mockPage.on as any).mock.calls.find(
+      ([event]) => event === 'blur'
+    )?.[1];
+
+    const stepPromise = new Promise((resolve) => {
+      generator.on('step', resolve);
+    });
+
+    // Simulate typing then blur
+    await inputHandler?.({ target: mockInput, data: 'test@example.com' });
+    await blurHandler?.({ target: mockInput });
+
+    const step = await stepPromise;
+    expect(step).toMatchObject({
+      interactionType: 'fill',
+      stepNumber: 1,
+    });
+    expect(step.qaSummary).toContain('test@example.com');
+  });
 });
