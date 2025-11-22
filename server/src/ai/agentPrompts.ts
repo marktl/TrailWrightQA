@@ -301,7 +301,8 @@ export async function generateTestName(
   steps: string[],
   provider: AIProvider,
   apiKey: string,
-  baseUrl?: string
+  baseUrl?: string,
+  model?: string
 ): Promise<string> {
   const formattedSteps = steps.length
     ? steps.map((summary, index) => `${index + 1}. ${summary}`).join('\n')
@@ -323,7 +324,7 @@ Provide a concise test name (2-6 words). Avoid special characters other than spa
     case 'anthropic': {
       const client = new Anthropic({ apiKey });
       const completion = await client.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: model || 'claude-haiku-4-5',
         max_tokens: 60,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -337,7 +338,7 @@ Provide a concise test name (2-6 words). Avoid special characters other than spa
     case 'openai': {
       const client = new OpenAI({ apiKey, baseURL: baseUrl });
       const completion = await client.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: model || 'gpt-5-nano',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 60
       });
@@ -347,7 +348,7 @@ Provide a concise test name (2-6 words). Avoid special characters other than spa
     case 'gemini': {
       const genAI = new GoogleGenAI({ apiKey });
       const result = await genAI.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: model || 'gemini-2.5-flash-lite',
         contents: prompt
       });
       response = result.text || '';
@@ -374,7 +375,8 @@ export async function generateTestTags(
   startUrl: string,
   provider: AIProvider,
   apiKey: string,
-  baseUrl?: string
+  baseUrl?: string,
+  model?: string
 ): Promise<string[]> {
   const formattedSteps = steps.length
     ? steps.map((summary, index) => `${index + 1}. ${summary}`).join('\n')
@@ -407,7 +409,7 @@ Respond with comma-separated tags only (no explanations).`;
     case 'anthropic': {
       const client = new Anthropic({ apiKey });
       const completion = await client.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: model || 'claude-haiku-4-5',
         max_tokens: 100,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -421,7 +423,7 @@ Respond with comma-separated tags only (no explanations).`;
     case 'openai': {
       const client = new OpenAI({ apiKey, baseURL: baseUrl });
       const completion = await client.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: model || 'gpt-5-nano',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 100
       });
@@ -431,7 +433,7 @@ Respond with comma-separated tags only (no explanations).`;
     case 'gemini': {
       const genAI = new GoogleGenAI({ apiKey });
       const result = await genAI.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: model || 'gemini-2.5-flash-lite',
         contents: prompt
       });
       response = result.text || '';

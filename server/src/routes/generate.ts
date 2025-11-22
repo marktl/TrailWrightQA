@@ -180,6 +180,10 @@ router.post('/start', async (req, res) => {
       return res.status(400).json({ error: 'API key not configured' });
     }
 
+    // Get selected model for the provider
+    const modelKey = `${config.apiProvider}Model` as keyof typeof config;
+    const selectedModel = config[modelKey] as string | undefined;
+
     // Create new generation session
     let credentialRecord = undefined;
     if (trimmedCredentialId) {
@@ -195,7 +199,8 @@ router.post('/start', async (req, res) => {
       config.apiProvider,
       apiKey,
       config.baseUrl,
-      credentialRecord
+      credentialRecord,
+      selectedModel
     );
     sessions.set(generator.id, generator);
     console.log(`[generate] Created session ${generator.id}. Total active sessions: ${sessions.size}`);

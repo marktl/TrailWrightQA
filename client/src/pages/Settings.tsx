@@ -8,14 +8,45 @@ type Config = {
   apiKey: string;
   defaultBrowser: 'chromium' | 'firefox' | 'webkit';
   defaultStartUrl?: string;
+  anthropicModel?: string;
+  openaiModel?: string;
+  geminiModel?: string;
 };
 
 const defaultConfig: Config = {
   apiProvider: 'anthropic',
   apiKey: '',
   defaultBrowser: 'chromium',
-  defaultStartUrl: ''
+  defaultStartUrl: '',
+  anthropicModel: 'claude-sonnet-4-5',
+  openaiModel: 'gpt-5',
+  geminiModel: 'gemini-2.5-flash'
 };
+
+const AVAILABLE_MODELS = {
+  anthropic: [
+    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Best balance of intelligence, speed, and cost (recommended)' },
+    { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', description: 'Fast and cost-efficient' },
+    { id: 'claude-opus-4-1', name: 'Claude Opus 4.1', description: 'Most capable for complex tasks' },
+    { id: 'claude-3-5-sonnet-20241022', name: 'Claude Sonnet 3.5 (legacy)', description: 'Previous generation' },
+    { id: 'claude-3-5-haiku-20241022', name: 'Claude Haiku 3.5 (legacy)', description: 'Previous generation' }
+  ],
+  openai: [
+    { id: 'gpt-5', name: 'GPT-5', description: 'Latest flagship model (recommended)' },
+    { id: 'gpt-5-mini', name: 'GPT-5 Mini', description: 'Smaller, faster GPT-5 variant' },
+    { id: 'gpt-5-nano', name: 'GPT-5 Nano', description: 'Fastest and most cost-efficient GPT-5' },
+    { id: 'o3', name: 'o3', description: 'Latest reasoning model for complex tasks' },
+    { id: 'o4-mini', name: 'o4-mini', description: 'Fast reasoning at lower cost' },
+    { id: 'gpt-4o', name: 'GPT-4o (legacy)', description: 'Previous generation multimodal' }
+  ],
+  gemini: [
+    { id: 'gemini-3-pro-preview', name: 'Gemini 3.0 Pro Preview', description: 'Best multimodal understanding (latest)' },
+    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Advanced reasoning model' },
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Best price-performance (recommended)' },
+    { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', description: 'Fastest and most cost-efficient' },
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash (legacy)', description: 'Previous generation' }
+  ]
+} as const;
 
 export default function Settings() {
   const [config, setConfig] = useState<Config>(defaultConfig);
@@ -196,6 +227,35 @@ export default function Settings() {
                 </label>
               ))}
             </div>
+          </section>
+
+          <section>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              AI Model
+            </label>
+            <select
+              value={
+                config.apiProvider === 'anthropic'
+                  ? config.anthropicModel || 'claude-sonnet-4-5'
+                  : config.apiProvider === 'openai'
+                  ? config.openaiModel || 'gpt-4o'
+                  : config.geminiModel || 'gemini-2.5-flash'
+              }
+              onChange={(e) => {
+                const modelKey = `${config.apiProvider}Model` as keyof Config;
+                updateConfig({ [modelKey]: e.target.value });
+              }}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              {AVAILABLE_MODELS[config.apiProvider].map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name} - {model.description}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Select the AI model to use for test generation and chat
+            </p>
           </section>
 
           <section>

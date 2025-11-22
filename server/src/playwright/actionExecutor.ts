@@ -35,6 +35,7 @@ interface SplitFieldInfo {
   totalParts: number;  // Total number of parts
   pattern: string;     // Pattern like "ssn{n}" or "phone{n}"
   allSelectors: string[]; // All field selectors
+  shouldAutoSplit: boolean; // Whether to auto-split based on field index
 }
 
 function detectSplitField(selector: string, value: string): SplitFieldInfo | null {
@@ -95,12 +96,17 @@ function detectSplitField(selector: string, value: string): SplitFieldInfo | nul
         );
       }
 
+      // Only auto-split when targeting the FIRST field AND value looks like complete data
+      // This prevents auto-splitting when correcting individual fields
+      const shouldAutoSplit = currentIndex === 1 && value.length >= 7;
+
       return {
         baseName,
         index: currentIndex,
         totalParts,
         pattern: `${baseName}{n}`,
-        allSelectors
+        allSelectors,
+        shouldAutoSplit
       };
     }
   }
@@ -235,7 +241,8 @@ export async function executeAction(
         // Check if this is a split-field (like SSN or phone)
         const splitInfo = detectSplitField(action.selector, action.value);
 
-        if (splitInfo && action.value.length > 3) {
+        // Only auto-split if shouldAutoSplit flag is true (targeting first field with full value)
+        if (splitInfo && splitInfo.shouldAutoSplit && action.value.length > 3) {
           // This is a split field - fill all parts
           const parts = splitValue(action.value, splitInfo.totalParts, splitInfo.baseName);
 
@@ -253,7 +260,7 @@ export async function executeAction(
           // Keep original selector so generatePlaywrightCode can detect split pattern
           // (no need to update action.selector)
         } else {
-          // Normal single-field fill
+          // Normal single-field fill (including when targeting individual split-field parts)
           const fillTarget = await resolveLocator(page, action.selector);
           action.selector = fillTarget.selectorForCode;
           try {
@@ -515,7 +522,7 @@ export function generatePlaywrightCode(action: AIAction): string {
       // Check if this is a split-field fill (selector contains multiple locators)
       const splitInfo = action.selector && detectSplitField(action.selector, action.value || '');
 
-      if (splitInfo && action.value && action.value.length > 3) {
+      if (splitInfo && splitInfo.shouldAutoSplit && action.value && action.value.length > 3) {
         // Generate code for split-field
         const parts = splitValue(action.value, splitInfo.totalParts, splitInfo.baseName);
         const lines = splitInfo.allSelectors
@@ -602,7 +609,7 @@ export function generateQASummary(action: AIAction): string {
       // Check if this is a split-field
       const splitInfo = action.selector && detectSplitField(action.selector, action.value || '');
 
-      if (splitInfo && action.value && action.value.length > 3) {
+      if (splitInfo && splitInfo.shouldAutoSplit && action.value && action.value.length > 3) {
         // Generate QA summary for split field
         const fieldType = splitInfo.baseName.toLowerCase().includes('ssn') ? 'SSN' :
                          splitInfo.baseName.toLowerCase().includes('phone') ? 'Phone' :

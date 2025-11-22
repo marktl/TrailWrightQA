@@ -78,6 +78,7 @@ export class LiveTestGenerator extends EventEmitter {
   private provider: AIProvider;
   private apiKey: string;
   private baseUrl?: string;
+  private model?: string;
   private isPaused = false;
   private isRunning = false;
   private nextStepNumber = 1;
@@ -97,7 +98,8 @@ export class LiveTestGenerator extends EventEmitter {
     provider: AIProvider,
     apiKey: string,
     baseUrl?: string,
-    credential?: CredentialRecord
+    credential?: CredentialRecord,
+    model?: string
   ) {
     super();
     this.sessionId = `gen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -123,6 +125,7 @@ export class LiveTestGenerator extends EventEmitter {
     this.provider = provider;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
+    this.model = model;
     this.credential = credential;
 
     this.setMaxListeners(100);
@@ -466,8 +469,19 @@ export class LiveTestGenerator extends EventEmitter {
       }
 
       // Parse JSON response
-      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const action: AIAction = JSON.parse(cleaned);
+      const cleaned = responseText
+        .replace(/```json\s*/g, '')
+        .replace(/```\s*/g, '')
+        .trim();
+
+      let action: AIAction;
+      try {
+        action = JSON.parse(cleaned);
+      } catch (parseError: any) {
+        this.log(`⚠️ JSON parse error in agent decision: ${parseError.message}`);
+        this.log(`Raw response (first 500 chars): ${responseText.slice(0, 500)}`);
+        throw new Error(`Invalid JSON from AI: ${parseError.message}`);
+      }
 
       // Validate action
       if (!action.action || !action.reasoning) {
@@ -551,11 +565,19 @@ export class LiveTestGenerator extends EventEmitter {
       ]
       : prompt;
 
+    // Use response prefilling for JSON output when no tools are provided
+    const messages: Anthropic.MessageParam[] = tools && tools.length > 0
+      ? [{ role: 'user', content: messageContent }]
+      : [
+          { role: 'user', content: messageContent },
+          { role: 'assistant', content: '{' } // Prefill to force JSON
+        ];
+
     const params: any = {
-      model: 'claude-3-5-sonnet-20241022',
-      max_tokens: 1000,
+      model: this.model || 'claude-sonnet-4-5',
+      max_tokens: 2000, // Increased for complex actions
       system: AGENT_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: messageContent }]
+      messages
     };
 
     if (tools && tools.length > 0) {
@@ -577,6 +599,11 @@ export class LiveTestGenerator extends EventEmitter {
       } else if (block.type === 'tool_use') {
         toolCalls.push({ name: block.name, args: block.input });
       }
+    }
+
+    // Prepend opening brace if we used prefilling (no tools)
+    if (text && (!tools || tools.length === 0)) {
+      text = '{' + text;
     }
 
     return { text, toolCalls: toolCalls.length ? toolCalls : undefined };
@@ -603,9 +630,9 @@ export class LiveTestGenerator extends EventEmitter {
       ];
 
     const params: any = {
-      model: 'gpt-4o',
+      model: this.model || 'gpt-5',
       messages,
-      max_tokens: 1000,
+      max_tokens: 2000,
     };
 
     if (tools && tools.length > 0) {
@@ -677,7 +704,7 @@ export class LiveTestGenerator extends EventEmitter {
       : [{ text: prompt }];
 
     const request: any = {
-      model: 'gemini-2.5-pro',
+      model: this.model || 'gemini-2.5-flash',
       contents: [{ role: 'user', parts }], // The SDK expects 'contents' to be an array of Content objects
       generationConfig: {
         systemInstruction: AGENT_SYSTEM_PROMPT,
@@ -1249,7 +1276,7 @@ export class LiveTestGenerator extends EventEmitter {
     }
 
     const summaries = this.recordedSteps.map((step) => step.qaSummary);
-    return generateTestName(this.options.goal, summaries, this.provider, this.apiKey, this.baseUrl);
+    return generateTestName(this.options.goal, summaries, this.provider, this.apiKey, this.baseUrl, this.model);
   }
 
   async suggestTestTags(): Promise<string[]> {
@@ -1264,7 +1291,8 @@ export class LiveTestGenerator extends EventEmitter {
       this.options.startUrl,
       this.provider,
       this.apiKey,
-      this.baseUrl
+      this.baseUrl,
+      this.model
     );
   }
 
@@ -1648,8 +1676,21 @@ export class LiveTestGenerator extends EventEmitter {
       }
 
       // Parse JSON response
-      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const planResponse = JSON.parse(cleaned);
+      const cleaned = responseText
+        .replace(/```json\s*/g, '')
+        .replace(/```\s*/g, '')
+        .trim();
+
+      let planResponse;
+      try {
+        planResponse = JSON.parse(cleaned);
+      } catch (parseError: any) {
+        // Log the malformed JSON for debugging
+        this.log(`⚠️ JSON parse error: ${parseError.message}`);
+        this.log(`Raw response (first 500 chars): ${responseText.slice(0, 500)}`);
+        this.log(`Cleaned JSON (first 500 chars): ${cleaned.slice(0, 500)}`);
+        throw new Error(`Invalid JSON from AI: ${parseError.message}`);
+      }
 
       if (!planResponse.canExecute) {
         // AI needs clarification - this is normal workflow, not an error
@@ -1860,11 +1901,16 @@ export class LiveTestGenerator extends EventEmitter {
    */
   private async callAnthropicPlanner(prompt: string): Promise<string> {
     const client = new Anthropic({ apiKey: this.apiKey });
+
+    // Use response prefilling to ensure valid JSON output
     const message = await client.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
-      max_tokens: 1000,
+      model: this.model || 'claude-sonnet-4-5',
+      max_tokens: 4000, // Increased for complex forms
       system: STEP_PLANNER_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: prompt }]
+      messages: [
+        { role: 'user', content: prompt },
+        { role: 'assistant', content: '{' } // Prefill to force JSON
+      ]
     });
 
     const content = message.content[0];
@@ -1872,7 +1918,8 @@ export class LiveTestGenerator extends EventEmitter {
       throw new Error('Unexpected response type from Anthropic');
     }
 
-    return content.text;
+    // Prepend the opening brace that was prefilled
+    return '{' + content.text;
   }
 
   /**
@@ -1881,12 +1928,12 @@ export class LiveTestGenerator extends EventEmitter {
   private async callOpenAIPlanner(prompt: string): Promise<string> {
     const client = new OpenAI({ apiKey: this.apiKey });
     const completion = await client.chat.completions.create({
-      model: 'gpt-4o',
+      model: this.model || 'gpt-5',
       messages: [
         { role: 'system', content: STEP_PLANNER_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 1000,
+      max_tokens: 2000,
       response_format: { type: 'json_object' }
     });
 
@@ -1904,7 +1951,7 @@ export class LiveTestGenerator extends EventEmitter {
   private async callGeminiPlanner(prompt: string): Promise<string> {
     const genAI = new GoogleGenAI({ apiKey: this.apiKey });
     const result = await genAI.models.generateContent({
-      model: 'gemini-2.5-pro',
+      model: this.model || 'gemini-2.5-flash',
       contents: prompt,
       config: {
         systemInstruction: STEP_PLANNER_SYSTEM_PROMPT,
@@ -2346,7 +2393,7 @@ Keep it non-technical and actionable. Do not use markdown.`;
             : textPrompt;
 
           const message = await client.messages.create({
-            model: 'claude-3-5-sonnet-20241022',
+            model: this.model || 'claude-sonnet-4-5',
             max_tokens: 300,
             messages: [{ role: 'user', content }]
           });
@@ -2371,7 +2418,7 @@ Keep it non-technical and actionable. Do not use markdown.`;
             : [{ role: 'user', content: textPrompt }];
 
           const completion = await client.chat.completions.create({
-            model: 'gpt-4o',
+            model: this.model || 'gpt-5',
             messages,
             max_tokens: 300
           });
@@ -2385,7 +2432,7 @@ Keep it non-technical and actionable. Do not use markdown.`;
             : textPrompt;
 
           const result = await genAI.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: this.model || 'gemini-2.5-flash',
             contents: parts
           });
           summary = result.text || '';
@@ -2506,20 +2553,23 @@ Provide a JSON response with the most likely action:
         case 'anthropic': {
           const client = new Anthropic({ apiKey: this.apiKey });
           const message = await client.messages.create({
-            model: 'claude-3-5-sonnet-20241022',
+            model: this.model || 'claude-sonnet-4-5',
             max_tokens: 500,
-            messages: [{ role: 'user', content: prompt }]
+            messages: [
+              { role: 'user', content: prompt },
+              { role: 'assistant', content: '{' } // Prefill to force JSON
+            ]
           });
           const content = message.content[0];
           if (content.type === 'text') {
-            responseText = content.text;
+            responseText = '{' + content.text;
           }
           break;
         }
         case 'openai': {
           const client = new OpenAI({ apiKey: this.apiKey });
           const completion = await client.chat.completions.create({
-            model: 'gpt-4o',
+            model: this.model || 'gpt-5',
             messages: [{ role: 'user', content: prompt }],
             max_tokens: 500,
             response_format: { type: 'json_object' }
@@ -2530,7 +2580,7 @@ Provide a JSON response with the most likely action:
         case 'gemini': {
           const genAI = new GoogleGenAI({ apiKey: this.apiKey });
           const result = await genAI.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: this.model || 'gemini-2.5-flash',
             contents: prompt,
             config: { responseMimeType: 'application/json' }
           });
@@ -2539,7 +2589,11 @@ Provide a JSON response with the most likely action:
         }
       }
 
-      const cleaned = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const cleaned = responseText
+        .replace(/```json\s*/g, '')
+        .replace(/```\s*/g, '')
+        .trim();
+
       const inference = JSON.parse(cleaned);
 
       return {

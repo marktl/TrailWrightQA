@@ -40,11 +40,15 @@ Rules:
 - Do NOT include test() wrapper or page fixture - just the action code
 - Return ONLY valid JSON, no markdown formatting`;
 
+    const modelKey = `${config.apiProvider}Model` as keyof typeof config;
+    const selectedModel = config[modelKey] as string | undefined;
+
     const aiResponse = await chatWithAI({
       provider: config.apiProvider,
       apiKey: config.apiKey,
       message: `Generate Playwright code for: ${prompt}`,
-      history: [{ id: '1', role: 'system', message: systemPrompt, timestamp: new Date().toISOString() }]
+      history: [{ id: '1', role: 'system', message: systemPrompt, timestamp: new Date().toISOString() }],
+      model: selectedModel
     });
 
     // Parse AI response as JSON

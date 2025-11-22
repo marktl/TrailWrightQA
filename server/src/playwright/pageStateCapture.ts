@@ -117,11 +117,106 @@ async function captureUnlabeledInputs(page: Page): Promise<string> {
       type?: string;
       placeholder?: string;
       className?: string;
+      contextLabel?: string;
+      isFilled?: boolean;
+      maxlength?: string;
     }
 
     const unlabeled = await page.evaluate(`
       (() => {
         const inputs = [];
+
+        // Helper to detect split-field pattern and get position info
+        function getSplitFieldPosition(id, maxlength) {
+          if (!id) return null;
+
+          // SSN patterns: ssn1, ssn2, ssn3 or ssnConf1, ssnConf2, ssnConf3
+          const ssnMatch = id.match(/^(ssn(?:Conf)?)(\d)$/);
+          if (ssnMatch) {
+            const isConfirm = ssnMatch[1].includes('Conf');
+            const index = parseInt(ssnMatch[2]);
+            const prefix = isConfirm ? 'Confirm ' : '';
+
+            if (index === 1) return prefix + 'SSN (first ' + (maxlength || '3') + ' digits)';
+            if (index === 2) return prefix + 'SSN (middle ' + (maxlength || '2') + ' digits)';
+            if (index === 3) return prefix + 'SSN (last ' + (maxlength || '4') + ' digits)';
+          }
+
+          // Phone patterns: phone1, phone2, phone3
+          const phoneMatch = id.match(/^(phone(?:Conf)?)(\d)$/);
+          if (phoneMatch) {
+            const isConfirm = phoneMatch[1].includes('Conf');
+            const index = parseInt(phoneMatch[2]);
+            const prefix = isConfirm ? 'Confirm ' : '';
+
+            if (index === 1) return prefix + 'Phone (area code)';
+            if (index === 2) return prefix + 'Phone (prefix)';
+            if (index === 3) return prefix + 'Phone (line number)';
+          }
+
+          return null;
+        }
+
+        // Helper to extract contextual label text
+        function extractContextLabel(element) {
+          // Look for preceding label text in same form group/container
+          let context = '';
+
+          // Check parent's previous sibling for label
+          let parent = element.parentElement;
+          if (parent) {
+            // Look for label in parent's preceding siblings
+            let prevSibling = parent.previousElementSibling;
+            if (prevSibling && prevSibling.tagName === 'LABEL') {
+              context = prevSibling.textContent.trim();
+            }
+
+            // Look for label within parent
+            if (!context) {
+              const labelInParent = parent.querySelector('label');
+              if (labelInParent && labelInParent.textContent) {
+                context = labelInParent.textContent.trim();
+              }
+            }
+
+            // Look for text in parent with class like 'control-label' or 'form-label'
+            if (!context && parent.previousElementSibling) {
+              const prev = parent.previousElementSibling;
+              if (prev.className && (prev.className.includes('label') || prev.className.includes('control'))) {
+                context = prev.textContent.trim();
+              }
+            }
+          }
+
+          // Look for nearest preceding label (walk backwards through DOM)
+          if (!context) {
+            let current = element;
+            let steps = 0;
+            while (current && steps < 5) {
+              if (current.previousElementSibling) {
+                current = current.previousElementSibling;
+                if (current.tagName === 'LABEL') {
+                  context = current.textContent.trim();
+                  break;
+                }
+              } else {
+                current = current.parentElement;
+              }
+              steps++;
+            }
+          }
+
+          // Clean up context (remove asterisks, extra whitespace)
+          if (context) {
+            context = context.replace(/\s+/g, ' ').replace(/\*/g, '').trim();
+            // Limit length
+            if (context.length > 100) {
+              context = context.substring(0, 100) + '...';
+            }
+          }
+
+          return context || undefined;
+        }
 
         // Find all form inputs
         const elements = document.querySelectorAll('input, select, textarea');
@@ -136,13 +231,25 @@ async function captureUnlabeledInputs(page: Page): Promise<string> {
 
           // Only include if no accessible name (no label association)
           if (!hasLabel && !hasAriaLabel) {
-            inputs.push({
+            const maxlength = input.getAttribute('maxlength');
+            const baseContext = extractContextLabel(input);
+            const splitPosition = getSplitFieldPosition(input.id, maxlength);
+
+            // Use split-field position if detected, otherwise use base context
+            const contextLabel = splitPosition || baseContext;
+
+            const inputData = {
               id: input.id || undefined,
               name: input.getAttribute('name') || undefined,
               type: input.getAttribute('type') || input.tagName.toLowerCase(),
               placeholder: input.getAttribute('placeholder') || undefined,
-              className: input.className || undefined
-            });
+              className: input.className || undefined,
+              contextLabel: contextLabel,
+              isFilled: input.value && input.value.length > 0,
+              maxlength: maxlength || undefined
+            };
+
+            inputs.push(inputData);
           }
         });
 
@@ -216,8 +323,22 @@ ${state.accessibilityTree}`;
   if (state.unlabeledInputs && state.unlabeledInputs.trim().length > 0) {
     output += `
 
-Unlabeled Inputs (use id or name attribute to target):
-${state.unlabeledInputs}`;
+Unlabeled Inputs (MUST target using #id or [name="..."] selectors):
+`;
+
+    // Parse and reformat to make IDs prominent
+    try {
+      const inputs = JSON.parse(state.unlabeledInputs);
+      for (const input of inputs) {
+        const selector = input.id ? `#${input.id}` : input.name ? `[name="${input.name}"]` : 'unknown';
+        const label = input.contextLabel || input.placeholder || input.type;
+        const filled = input.isFilled ? ' [FILLED]' : '';
+        output += `  ${selector} - ${label}${filled}\n`;
+      }
+    } catch {
+      // Fallback to JSON if parsing fails
+      output += state.unlabeledInputs;
+    }
   }
 
   return output;

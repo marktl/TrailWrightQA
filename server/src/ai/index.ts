@@ -21,6 +21,7 @@ export interface GenerateTestOptions {
   apiKey: string;
   prompt: string;
   baseUrl?: string;
+  model?: string;
 }
 
 export interface ChatWithAIOptions {
@@ -28,20 +29,21 @@ export interface ChatWithAIOptions {
   apiKey: string;
   message: string;
   history?: ChatMessage[];
+  model?: string;
 }
 
 type AssistantOrUserMessage = Omit<ChatMessage, 'role'> & { role: 'user' | 'assistant' };
 
 export async function generateTest(options: GenerateTestOptions): Promise<string> {
-  const { provider, apiKey, prompt, baseUrl } = options;
+  const { provider, apiKey, prompt, baseUrl, model } = options;
 
   switch (provider) {
     case 'anthropic':
-      return generateWithAnthropic(apiKey, prompt, baseUrl);
+      return generateWithAnthropic(apiKey, prompt, baseUrl, model);
     case 'openai':
-      return generateWithOpenAI(apiKey, prompt, baseUrl);
+      return generateWithOpenAI(apiKey, prompt, baseUrl, model);
     case 'gemini':
-      return generateWithGemini(apiKey, prompt, baseUrl);
+      return generateWithGemini(apiKey, prompt, baseUrl, model);
     default:
       throw new Error(`Unsupported AI provider: ${provider}`);
   }
@@ -50,12 +52,13 @@ export async function generateTest(options: GenerateTestOptions): Promise<string
 async function generateWithAnthropic(
   apiKey: string,
   userPrompt: string,
-  baseUrl?: string
+  baseUrl?: string,
+  model?: string
 ): Promise<string> {
   const client = new Anthropic({ apiKey });
 
   const message = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
+    model: model || 'claude-sonnet-4-5',
     max_tokens: 4000,
     system: SYSTEM_PROMPT,
     messages: [{
@@ -75,12 +78,13 @@ async function generateWithAnthropic(
 async function generateWithOpenAI(
   apiKey: string,
   userPrompt: string,
-  baseUrl?: string
+  baseUrl?: string,
+  model?: string
 ): Promise<string> {
   const client = new OpenAI({ apiKey });
 
   const completion = await client.chat.completions.create({
-    model: 'gpt-4o',
+    model: model || 'gpt-5',
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: buildTestGenerationPrompt(userPrompt, baseUrl) }
@@ -99,11 +103,12 @@ async function generateWithOpenAI(
 async function generateWithGemini(
   apiKey: string,
   userPrompt: string,
-  baseUrl?: string
+  baseUrl?: string,
+  model?: string
 ): Promise<string> {
   const genAI = new GoogleGenAI({ apiKey });
   const result = await genAI.models.generateContent({
-    model: 'gemini-2.5-pro',
+    model: model || 'gemini-2.5-flash',
     contents: buildTestGenerationPrompt(userPrompt, baseUrl),
     config: {
       systemInstruction: SYSTEM_PROMPT
@@ -133,7 +138,8 @@ function normalizeHistory(history?: ChatMessage[]): AssistantOrUserMessage[] {
 async function chatWithAnthropic(
   apiKey: string,
   history: AssistantOrUserMessage[],
-  message: string
+  message: string,
+  model?: string
 ): Promise<string> {
   const client = new Anthropic({ apiKey });
   const conversation = history.map((msg: AssistantOrUserMessage) => ({
@@ -144,7 +150,7 @@ async function chatWithAnthropic(
   conversation.push({ role: 'user', content: message });
 
   const response = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
+    model: model || 'claude-sonnet-4-5',
     max_tokens: 800,
     system: CHAT_SYSTEM_PROMPT,
     messages: conversation
@@ -161,7 +167,8 @@ async function chatWithAnthropic(
 async function chatWithOpenAI(
   apiKey: string,
   history: AssistantOrUserMessage[],
-  message: string
+  message: string,
+  model?: string
 ): Promise<string> {
   const client = new OpenAI({ apiKey });
 
@@ -172,7 +179,7 @@ async function chatWithOpenAI(
   ];
 
   const completion = await client.chat.completions.create({
-    model: 'gpt-4o',
+    model: model || 'gpt-5',
     messages,
     max_tokens: 800
   });
@@ -188,7 +195,8 @@ async function chatWithOpenAI(
 async function chatWithGemini(
   apiKey: string,
   history: AssistantOrUserMessage[],
-  message: string
+  message: string,
+  model?: string
 ): Promise<string> {
   const genAI = new GoogleGenAI({ apiKey });
   const contents = [
@@ -200,7 +208,7 @@ async function chatWithGemini(
   ];
 
   const result = await genAI.models.generateContent({
-    model: 'gemini-2.5-pro',
+    model: model || 'gemini-2.5-flash',
     contents,
     config: {
       systemInstruction: CHAT_SYSTEM_PROMPT
@@ -216,7 +224,7 @@ async function chatWithGemini(
 }
 
 export async function chatWithAI(options: ChatWithAIOptions): Promise<string> {
-  const { provider, apiKey } = options;
+  const { provider, apiKey, model } = options;
   const message = options.message?.trim();
 
   if (!message) {
@@ -227,11 +235,11 @@ export async function chatWithAI(options: ChatWithAIOptions): Promise<string> {
 
   switch (provider) {
     case 'anthropic':
-      return chatWithAnthropic(apiKey, history, message);
+      return chatWithAnthropic(apiKey, history, message, model);
     case 'openai':
-      return chatWithOpenAI(apiKey, history, message);
+      return chatWithOpenAI(apiKey, history, message, model);
     case 'gemini':
-      return chatWithGemini(apiKey, history, message);
+      return chatWithGemini(apiKey, history, message, model);
     default:
       throw new Error(`Unsupported AI provider: ${provider}`);
   }
@@ -268,10 +276,11 @@ export interface SummarizeErrorOptions {
   apiKey: string;
   error: string;
   stepContext?: string;
+  model?: string;
 }
 
 export async function summarizeError(options: SummarizeErrorOptions): Promise<string> {
-  const { provider, apiKey, error, stepContext } = options;
+  const { provider, apiKey, error, stepContext, model } = options;
 
   const prompt = stepContext
     ? `Test step: "${stepContext}"\n\nError:\n${error}\n\nProvide a brief, non-technical explanation:`
@@ -280,11 +289,11 @@ export async function summarizeError(options: SummarizeErrorOptions): Promise<st
   try {
     switch (provider) {
       case 'anthropic':
-        return await summarizeWithAnthropic(apiKey, prompt);
+        return await summarizeWithAnthropic(apiKey, prompt, model);
       case 'openai':
-        return await summarizeWithOpenAI(apiKey, prompt);
+        return await summarizeWithOpenAI(apiKey, prompt, model);
       case 'gemini':
-        return await summarizeWithGemini(apiKey, prompt);
+        return await summarizeWithGemini(apiKey, prompt, model);
       default:
         return error; // Return original error if provider not supported
     }
@@ -293,11 +302,11 @@ export async function summarizeError(options: SummarizeErrorOptions): Promise<st
   }
 }
 
-async function summarizeWithAnthropic(apiKey: string, prompt: string): Promise<string> {
+async function summarizeWithAnthropic(apiKey: string, prompt: string, model?: string): Promise<string> {
   const client = new Anthropic({ apiKey });
 
   const message = await client.messages.create({
-    model: 'claude-3-5-haiku-20241022', // Use faster/cheaper model for summaries
+    model: model || 'claude-haiku-4-5', // Use faster/cheaper model for summaries
     max_tokens: 200,
     system: ERROR_SUMMARY_PROMPT,
     messages: [{ role: 'user', content: prompt }]
@@ -311,11 +320,11 @@ async function summarizeWithAnthropic(apiKey: string, prompt: string): Promise<s
   return content.text.trim();
 }
 
-async function summarizeWithOpenAI(apiKey: string, prompt: string): Promise<string> {
+async function summarizeWithOpenAI(apiKey: string, prompt: string, model?: string): Promise<string> {
   const client = new OpenAI({ apiKey });
 
   const completion = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: model || 'gpt-5-nano',
     max_tokens: 200,
     messages: [
       { role: 'system', content: ERROR_SUMMARY_PROMPT },
@@ -331,11 +340,11 @@ async function summarizeWithOpenAI(apiKey: string, prompt: string): Promise<stri
   return content;
 }
 
-async function summarizeWithGemini(apiKey: string, prompt: string): Promise<string> {
+async function summarizeWithGemini(apiKey: string, prompt: string, model?: string): Promise<string> {
   const genAI = new GoogleGenAI({ apiKey });
 
   const result = await genAI.models.generateContent({
-    model: 'gemini-2.0-flash-exp', // Use faster model for summaries
+    model: model || 'gemini-2.5-flash-lite', // Use faster model for summaries
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
       systemInstruction: ERROR_SUMMARY_PROMPT,
