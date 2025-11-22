@@ -54,7 +54,7 @@ export class RecordModeGenerator extends EventEmitter {
     this.browser = browser;
     this.page = await browser.newPage();
 
-    this.setupEventListeners();
+    await this.setupEventListeners();
 
     this.state.status = 'running';
     this.state.recordingActive = true;
@@ -65,37 +65,87 @@ export class RecordModeGenerator extends EventEmitter {
     this.emit('stateChange', this.state);
   }
 
-  private setupEventListeners(): void {
+  private async setupEventListeners(): Promise<void> {
     if (!this.page) return;
 
-    // Click events
-    (this.page as any).on('click', async (event: any) => {
-      await this.handleClickEvent(event);
+    await (this.page as any).exposeFunction('__twRecordClick', async (data: any) => {
+      await this.handleClickEvent(data);
     });
 
-    // Input events (track but don't record yet)
-    (this.page as any).on('input', async (event: any) => {
-      await this.handleInputEvent(event);
+    await (this.page as any).exposeFunction('__twRecordInput', async (data: any) => {
+      await this.handleInputEvent(data);
     });
 
-    // Blur events (finalize input recording)
-    (this.page as any).on('blur', async (event: any) => {
-      await this.handleBlurEvent(event);
+    await (this.page as any).exposeFunction('__twRecordBlur', async (data: any) => {
+      await this.handleBlurEvent(data);
     });
 
-    // Change events (for select dropdowns)
-    (this.page as any).on('change', async (event: any) => {
-      await this.handleChangeEvent(event);
+    await (this.page as any).exposeFunction('__twRecordChange', async (data: any) => {
+      await this.handleChangeEvent(data);
     });
 
-    // Navigation events
+    await (this.page as any).addInitScript(() => {
+      document.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        (window as any).__twRecordClick?.({
+          tagName: target.tagName,
+          role: target.getAttribute('role'),
+          ariaLabel: target.getAttribute('aria-label'),
+          textContent: target.textContent?.trim(),
+          id: target.id,
+          className: target.className
+        });
+      }, true);
+
+      document.addEventListener('input', (e) => {
+        const target = e.target as HTMLInputElement;
+        if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) {
+          (window as any).__twRecordInput?.({
+            tagName: target.tagName,
+            type: target.type,
+            value: target.value,
+            ariaLabel: target.getAttribute('aria-label'),
+            name: target.getAttribute('name'),
+            id: target.id
+          });
+        }
+      }, true);
+
+      document.addEventListener('blur', (e) => {
+        const target = e.target as HTMLInputElement;
+        if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) {
+          (window as any).__twRecordBlur?.({
+            tagName: target.tagName,
+            type: target.type,
+            value: target.value,
+            ariaLabel: target.getAttribute('aria-label'),
+            name: target.name,
+            id: target.id
+          });
+        }
+      }, true);
+
+      document.addEventListener('change', (e) => {
+        const target = e.target as HTMLSelectElement;
+        if (target.tagName === 'SELECT') {
+          (window as any).__twRecordChange?.({
+            tagName: target.tagName,
+            value: target.value,
+            ariaLabel: target.getAttribute('aria-label'),
+            name: target.name,
+            id: target.id
+          });
+        }
+      }, true);
+    });
+
     (this.page as any).on('framenavigated', async (frame: any) => {
       await this.handleNavigationEvent(frame);
     });
   }
 
-  private async handleClickEvent(event: any): Promise<void> {
-    const elementInfo = await this.captureElementInfo(event.target);
+  private async handleClickEvent(data: any): Promise<void> {
+    const elementInfo = await this.captureElementInfo(data);
     const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
     const screenshotData = await this.captureScreenshot();
 
@@ -105,7 +155,7 @@ export class RecordModeGenerator extends EventEmitter {
         element: {
           role: elementInfo.role,
           name: elementInfo.name,
-          tagName: event?.target?.tagName
+          tagName: data?.tagName
         }
       },
       {
@@ -136,11 +186,11 @@ export class RecordModeGenerator extends EventEmitter {
     this.emit('step', step);
   }
 
-  private async handleChangeEvent(event: any): Promise<void> {
-    if (event?.target?.tagName !== 'SELECT') return;
+  private async handleChangeEvent(data: any): Promise<void> {
+    if (data?.tagName !== 'SELECT') return;
 
-    const elementInfo = await this.captureElementInfo(event.target);
-    const selectedValue = event.target?.value;
+    const elementInfo = await this.captureElementInfo(data);
+    const selectedValue = data?.value;
     const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
     const screenshotData = await this.captureScreenshot();
 
@@ -201,17 +251,17 @@ export class RecordModeGenerator extends EventEmitter {
     this.emit('step', step);
   }
 
-  private async handleInputEvent(event: any): Promise<void> {
-    const selector = await this.generateUniqueSelector(event.target);
+  private async handleInputEvent(data: any): Promise<void> {
+    const selector = this.generateUniqueSelector(data);
     this.activeInputs.set(selector, {
-      value: event.target?.value || event.data || '',
+      value: data?.value || '',
       startTime: Date.now(),
-      element: event.target
+      element: data
     });
   }
 
-  private async handleBlurEvent(event: any): Promise<void> {
-    const selector = await this.generateUniqueSelector(event.target);
+  private async handleBlurEvent(data: any): Promise<void> {
+    const selector = this.generateUniqueSelector(data);
     const inputData = this.activeInputs.get(selector);
 
     if (!inputData) return;
@@ -246,13 +296,17 @@ export class RecordModeGenerator extends EventEmitter {
     name?: string;
     selector: string;
   }> {
-    const role = element?.getAttribute?.('role');
-    const ariaLabel = element?.getAttribute?.('aria-label');
-    const name = ariaLabel || element?.textContent?.trim() || '';
+    const role = element?.role;
+    const ariaLabel = element?.ariaLabel;
+    const textContent = element?.textContent;
+    const name = ariaLabel || textContent || element?.name || '';
+    const tagName = element?.tagName?.toLowerCase?.() || 'div';
 
     const selector = role && name
       ? `getByRole('${role}', { name: '${name}' })`
-      : `locator('${element?.tagName?.toLowerCase?.() || 'div'}')`;
+      : ariaLabel
+        ? `getByLabel('${ariaLabel}')`
+        : `locator('${tagName}')`;
 
     return {
       role,
@@ -261,8 +315,8 @@ export class RecordModeGenerator extends EventEmitter {
     };
   }
 
-  private async generateUniqueSelector(element: any): Promise<string> {
-    const label = element?.getAttribute?.('aria-label') || element?.getAttribute?.('name') || '';
+  private generateUniqueSelector(element: any): string {
+    const label = element?.ariaLabel || element?.name || element?.id || '';
     return `${element?.tagName || 'element'}-${label}`;
   }
 

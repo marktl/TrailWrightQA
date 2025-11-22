@@ -17,6 +17,9 @@ describe('Record Mode API', () => {
       url: vi.fn().mockReturnValue('https://example.com'),
       screenshot: vi.fn(),
       close: vi.fn(),
+      exposeFunction: vi.fn(),
+      addInitScript: vi.fn(),
+      mainFrame: vi.fn()
     };
 
     mockBrowser = {

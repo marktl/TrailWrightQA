@@ -11,8 +11,10 @@ describe('RecordModeGenerator', () => {
   let generator: RecordModeGenerator;
   let mockPage: Page;
   let mockBrowser: Browser;
+  let exposedFunctions: Record<string, any>;
 
   beforeEach(() => {
+    exposedFunctions = {};
     vi.clearAllMocks();
 
     mockPage = {
@@ -21,6 +23,13 @@ describe('RecordModeGenerator', () => {
       evaluate: vi.fn(),
       screenshot: vi.fn(),
     } as any;
+    (mockPage as any).exposeFunction = vi.fn(async (name, fn) => {
+      exposedFunctions[name] = fn;
+    });
+    (mockPage as any).addInitScript = vi.fn();
+    (mockPage as any).url = vi.fn().mockReturnValue('https://example.com');
+    (mockPage as any).mainFrame = vi.fn();
+    (mockPage as any).close = vi.fn();
 
     mockBrowser = {
       newPage: vi.fn().mockResolvedValue(mockPage),
@@ -87,12 +96,14 @@ describe('RecordModeGenerator', () => {
 
     await generator.start(mockBrowser);
 
-    // Simulate click event
-    const clickHandler = (mockPage.on as any).mock.calls.find(
-      ([event]) => event === 'click'
-    )?.[1];
+    const clickHandler = exposedFunctions.__twRecordClick;
 
-    await clickHandler?.({ target: mockElement });
+    await clickHandler?.({
+      tagName: mockElement.tagName,
+      role: 'button',
+      ariaLabel: 'Submit',
+      textContent: 'Submit'
+    });
 
     const step = await stepPromise;
     expect(step).toMatchObject({
@@ -121,20 +132,28 @@ describe('RecordModeGenerator', () => {
 
     await generator.start(mockBrowser);
 
-    const inputHandler = (mockPage.on as any).mock.calls.find(
-      ([event]) => event === 'input'
-    )?.[1];
-    const blurHandler = (mockPage.on as any).mock.calls.find(
-      ([event]) => event === 'blur'
-    )?.[1];
+    const inputHandler = exposedFunctions.__twRecordInput;
+    const blurHandler = exposedFunctions.__twRecordBlur;
 
     const stepPromise = new Promise((resolve) => {
       generator.on('step', resolve);
     });
 
     // Simulate typing then blur
-    await inputHandler?.({ target: mockInput, data: 'test@example.com' });
-    await blurHandler?.({ target: mockInput });
+    await inputHandler?.({
+      tagName: mockInput.tagName,
+      type: 'email',
+      ariaLabel: 'Email',
+      value: 'test@example.com',
+      name: 'email'
+    });
+    await blurHandler?.({
+      tagName: mockInput.tagName,
+      type: 'email',
+      ariaLabel: 'Email',
+      value: 'test@example.com',
+      name: 'email'
+    });
 
     const step = await stepPromise;
     expect(step).toMatchObject({
@@ -162,15 +181,18 @@ describe('RecordModeGenerator', () => {
 
     await generator.start(mockBrowser);
 
-    const changeHandler = (mockPage.on as any).mock.calls.find(
-      ([event]) => event === 'change'
-    )?.[1];
+    const changeHandler = exposedFunctions.__twRecordChange;
 
     const stepPromise = new Promise((resolve) => {
       generator.on('step', resolve);
     });
 
-    await changeHandler?.({ target: mockSelect });
+    await changeHandler?.({
+      tagName: mockSelect.tagName,
+      ariaLabel: 'Country',
+      value: 'USA',
+      name: 'country'
+    });
 
     const step = await stepPromise;
     expect(step).toMatchObject({
@@ -231,9 +253,7 @@ describe('RecordModeGenerator', () => {
 
     await generator.start(mockBrowser);
 
-    const clickHandler = (mockPage.on as any).mock.calls.find(
-      ([event]) => event === 'click'
-    )?.[1];
+    const clickHandler = exposedFunctions.__twRecordClick;
 
     const stepPromise = new Promise((resolve) => {
       generator.on('step', resolve);
@@ -245,7 +265,11 @@ describe('RecordModeGenerator', () => {
       textContent: 'Submit',
     };
 
-    await clickHandler?.({ target: mockElement });
+    await clickHandler?.({
+      tagName: mockElement.tagName,
+      ariaLabel: 'Submit',
+      textContent: 'Submit',
+    });
 
     const step = await stepPromise;
     expect(step.playwrightCode).toBe(mockAIResponse.playwrightCode);
@@ -269,11 +293,13 @@ describe('RecordModeGenerator', () => {
       generator.on('step', resolve);
     });
 
-    const clickHandler = (mockPage.on as any).mock.calls.find(
-      ([event]) => event === 'click'
-    )?.[1];
+    const clickHandler = exposedFunctions.__twRecordClick;
 
-    await clickHandler?.({ target: { tagName: 'BUTTON', textContent: 'Submit', getAttribute: vi.fn() } });
+    await clickHandler?.({
+      tagName: 'BUTTON',
+      textContent: 'Submit',
+      ariaLabel: 'Submit'
+    });
 
     const step = await stepPromise;
     expect(step.screenshotData).toBeDefined();
