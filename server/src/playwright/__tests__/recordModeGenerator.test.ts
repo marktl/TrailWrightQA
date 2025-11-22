@@ -53,4 +53,38 @@ describe('RecordModeGenerator', () => {
     expect(generator.state.recordingActive).toBe(true);
     expect(mockPage.goto).toHaveBeenCalledWith('https://example.com');
   });
+
+  it('should capture click events and emit step', async () => {
+    const mockElement = {
+      tagName: 'BUTTON',
+      getAttribute: vi.fn((attr) => (attr === 'aria-label' ? 'Submit' : null)),
+      textContent: 'Submit',
+    };
+
+    generator = new RecordModeGenerator({
+      sessionId: 'test-session-123',
+      name: 'Test Recording',
+      startUrl: 'https://example.com',
+      aiProvider: 'anthropic',
+    });
+
+    const stepPromise = new Promise((resolve) => {
+      generator.on('step', resolve);
+    });
+
+    await generator.start(mockBrowser);
+
+    // Simulate click event
+    const clickHandler = (mockPage.on as any).mock.calls.find(
+      ([event]) => event === 'click'
+    )?.[1];
+
+    await clickHandler?.({ target: mockElement });
+
+    const step = await stepPromise;
+    expect(step).toMatchObject({
+      interactionType: 'click',
+      stepNumber: 1,
+    });
+  });
 });
