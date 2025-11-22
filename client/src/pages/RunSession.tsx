@@ -349,7 +349,10 @@ export default function RunSession() {
       <div className="container mx-auto px-4 py-8">
         <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">{testTitle}</h1>
+            <div className="flex items-center gap-3">
+              <img src="/favicon.png" alt="TrailWright Logo" className="h-8 w-8 object-contain" />
+              <h1 className="text-3xl font-bold text-gray-900">{testTitle}</h1>
+            </div>
             {testMetadata?.description && (
               <p className="mt-1 text-gray-600">{testMetadata.description}</p>
             )}

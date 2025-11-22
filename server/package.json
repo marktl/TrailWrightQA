@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.67.0",
     "@google/genai": "^1.27.0",
+    "@modelcontextprotocol/sdk": "^1.22.0",
     "@playwright/test": "^1.56.1",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
@@ -20,9 +21,12 @@
     "csv-stringify": "^6.6.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "openai": "^6.7.0"
+    "openai": "^6.7.0",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/archiver": "^7.0.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.5",
     "@types/node": "^24.9.1",

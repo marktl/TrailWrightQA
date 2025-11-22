@@ -166,7 +166,10 @@ export default function Settings() {
             Back to Home
           </Link>
         </div>
-        <h1 className="text-3xl font-bold text-gray-900 mb-4">Settings</h1>
+        <div className="flex items-center gap-3 mb-4">
+          <img src="/favicon.png" alt="TrailWright Logo" className="h-8 w-8 object-contain" />
+          <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
+        </div>
         {loading && (
           <p className="mb-6 text-sm text-gray-500" data-testid="settings-loading">
             Loading configuration...

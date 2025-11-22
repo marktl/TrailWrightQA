@@ -160,7 +160,10 @@ export default function GenerateStart() {
       <div className="container mx-auto px-4 py-10 max-w-2xl">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Generate with AI</h1>
+            <div className="flex items-center gap-3">
+              <img src="/favicon.png" alt="TrailWright Logo" className="h-8 w-8 object-contain" />
+              <h1 className="text-3xl font-bold text-gray-900">Generate with AI</h1>
+            </div>
             <p className="text-sm text-gray-600">Describe the workflow once — TrailWright handles the rest.</p>
           </div>
           <button
@@ -178,11 +181,10 @@ export default function GenerateStart() {
               <button
                 type="button"
                 onClick={() => setMode('auto')}
-                className={`rounded-lg border px-4 py-3 text-left transition ${
-                  mode === 'auto'
+                className={`rounded-lg border px-4 py-3 text-left transition ${mode === 'auto'
                     ? 'border-blue-500 bg-blue-50 text-blue-900 shadow-sm'
                     : 'border-gray-200 text-gray-700 hover:border-gray-300'
-                }`}
+                  }`}
               >
                 <p className="text-sm font-semibold">Self-driving Test</p>
                 <p className="text-xs mt-1 text-gray-600">
@@ -192,11 +194,10 @@ export default function GenerateStart() {
               <button
                 type="button"
                 onClick={() => setMode('manual')}
-                className={`rounded-lg border px-4 py-3 text-left transition ${
-                  mode === 'manual'
+                className={`rounded-lg border px-4 py-3 text-left transition ${mode === 'manual'
                     ? 'border-blue-500 bg-blue-50 text-blue-900 shadow-sm'
                     : 'border-gray-200 text-gray-700 hover:border-gray-300'
-                }`}
+                  }`}
               >
                 <p className="text-sm font-semibold">Step-by-step Test</p>
                 <p className="text-xs mt-1 text-gray-600">

@@ -27,8 +27,19 @@ import OpenAI from 'openai';
 import { GoogleGenAI } from '@google/genai';
 import type { AIProvider } from '../ai/index.js';
 import { CONFIG } from '../config.js';
+import { PlaywrightMCPAdapter } from './mcpAdapter.js';
+import { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 const DEFAULT_MAX_STEPS = 20;
+
+type ToolCall = { name: string; args: any };
+type AIResponse = { text?: string; toolCalls?: ToolCall[] };
+type MCPFallbackResult = {
+  success: boolean;
+  recordedAction?: AIAction;
+  playwrightCodeOverride?: string;
+  qaSummaryOverride?: string;
+};
 
 type NormalizedGenerationOptions = {
   startUrl: string;
@@ -79,6 +90,7 @@ export class LiveTestGenerator extends EventEmitter {
   private originalManualInstruction?: string; // Stores instruction with {{placeholders}}
   private pendingPlan?: StepPlan; // For manual mode: plan awaiting user approval
   private pickedSelector?: string; // Stores selector from visual element picker
+  private mcpAdapter?: PlaywrightMCPAdapter;
 
   constructor(
     options: LiveGenerationOptions,
@@ -183,6 +195,9 @@ export class LiveTestGenerator extends EventEmitter {
       this.page.setDefaultTimeout(30000);
       this.page.setDefaultNavigationTimeout(60000);
 
+      // Initialize MCP Adapter
+      this.mcpAdapter = new PlaywrightMCPAdapter(this.page);
+
       resetHashTracking();
 
       await this.page.goto(this.options.startUrl, { waitUntil: 'domcontentloaded' });
@@ -242,135 +257,153 @@ export class LiveTestGenerator extends EventEmitter {
         }
 
         const step = this.nextStepNumber;
-        const maxRetries = 1; // 2 total attempts: original + 1 retry with screenshot
-        let retryCount = 0;
-        let lastError: string | undefined;
-        let failureScreenshot: string | undefined;
-        let actionSucceeded = false;
+        let playwrightCodeOverride: string | undefined;
+        let qaSummaryOverride: string | undefined;
+        let actionForRecording: AIAction | undefined;
 
-        while (retryCount <= maxRetries && !actionSucceeded) {
-          // Capture page state
-          const pageState = await capturePageState(this.page);
-          this.currentUrl = pageState.url;
+        // Capture page state
+        const pageState = await capturePageState(this.page);
+        this.currentUrl = pageState.url;
 
-          this.emit('event', {
-            type: 'page_changed',
-            timestamp: new Date().toISOString(),
-            payload: { url: pageState.url, title: pageState.title }
-          });
+        this.emit('event', {
+          type: 'page_changed',
+          timestamp: new Date().toISOString(),
+          payload: { url: pageState.url, title: pageState.title }
+        });
 
-          // Ask AI for next action (with screenshot if previous attempt failed)
-          this.updateStatus('thinking');
-          const action = await this.decideNextAction(
-            pageState.hasChanged ? formatPageStateForAI(pageState) : '(page unchanged)',
-            lastError,
-            failureScreenshot
-          );
+        // Ask AI for next action
+        this.updateStatus('thinking');
+        const action = await this.decideNextAction(
+          pageState.hasChanged ? formatPageStateForAI(pageState) : '(page unchanged)'
+        );
 
-          if (this.isPaused) {
+        if (this.isPaused) {
+          return;
+        }
+
+        // Check if done
+        if (action.action === 'done') {
+          if (manualInstruction) {
+            const finishedInstruction = this.clearManualInstruction() || manualInstruction;
+            const reasoning =
+              action.reasoning?.trim() ||
+              `I believe "${manualInstruction}" is already complete.`;
+            this.log(`✓ Finished step-by-step instruction: "${finishedInstruction}"`);
+            this.addChatMessage(
+              'assistant',
+              `${reasoning}\n\nDescribe the next browser action when you're ready.`
+            );
+            this.enterManualAwaitingState();
+            return;
+          } else {
+            if (this.userCorrections.length > 0) {
+              this.userCorrections = [];
+            }
+            this.log(`✓ Goal achieved: ${action.reasoning}`);
+            this.updateStatus('completed');
+            await this.finalize();
             return;
           }
+        }
 
-          // Check if done
-          if (action.action === 'done') {
+        // Execute action
+        this.updateStatus('running');
+
+        const result = await executeAction(this.page, action);
+
+        if (!result.success) {
+          // Fallback to MCP if standard action fails
+          this.log(`⚠️ Standard action failed: ${result.error}`);
+          this.log(`🛠️ Attempting fallback with MCP tools...`);
+
+          const mcpResult = await this.attemptMCPFallback(step, result.error || 'Unknown error');
+
+          if (mcpResult.success) {
+            actionForRecording = mcpResult.recordedAction ?? action;
+            playwrightCodeOverride = mcpResult.playwrightCodeOverride;
+            qaSummaryOverride = mcpResult.qaSummaryOverride;
+            this.log(`✓ MCP fallback succeeded`);
+          } else {
+            // MCP failed - pause and ask user for help
+            const failureScreenshot = await this.captureFailureScreenshot(step, 999);
+
             if (manualInstruction) {
-              const finishedInstruction = this.clearManualInstruction() || manualInstruction;
-              const reasoning =
-                action.reasoning?.trim() ||
-                `I believe "${manualInstruction}" is already complete.`;
-              this.log(`✓ Finished step-by-step instruction: "${finishedInstruction}"`);
-              this.addChatMessage(
-                'assistant',
-                `${reasoning}\n\nDescribe the next browser action when you're ready.`
-              );
-              this.enterManualAwaitingState();
-              return;
-            } else {
-              if (this.userCorrections.length > 0) {
-                this.userCorrections = [];
-              }
-              this.log(`✓ Goal achieved: ${action.reasoning}`);
-              this.updateStatus('completed');
-              await this.finalize();
-              return;
-            }
-          }
-
-          // Execute action
-          this.updateStatus('running');
-
-          const result = await executeAction(this.page, action);
-
-          if (!result.success) {
-            lastError = result.error;
-            retryCount++;
-
-            // Capture screenshot of failure for AI to analyze
-            failureScreenshot = await this.captureFailureScreenshot(step, retryCount);
-
-            if (retryCount <= maxRetries) {
-              this.log(`⚠️ Action failed (attempt ${retryCount}/${maxRetries + 1}): ${result.error}`);
-              this.log(`📸 Asking AI to try a different approach (screenshot provided)...`);
-              // Loop continues with lastError and failureScreenshot passed to AI
-              continue;
-            } else if (manualInstruction) {
               await this.handleManualInstructionFailure(
                 manualInstruction,
                 action,
                 result.error || 'Action failed',
                 failureScreenshot
               );
-              return;
             } else {
-              // All retries exhausted - pause and ask user for help
               await this.handleRetriesExhausted(action, result.error || 'Action failed', failureScreenshot);
-              return;
             }
+            return;
           }
-
+        } else {
           // Action succeeded
-          actionSucceeded = true;
+          actionForRecording = action;
+        }
 
-          // Allow page to settle before capturing screenshot
-          await this.page.waitForTimeout(500);
-          const screenshot = await this.captureStepScreenshot(step);
+        // Allow page to settle before capturing screenshot
+        await this.page.waitForTimeout(500);
+        const screenshot = await this.captureStepScreenshot(step);
 
-          // Record step
-          const recorded = createRecordedStep(step, action, {
+        if (!actionForRecording && !playwrightCodeOverride) {
+          actionForRecording = action;
+        }
+
+        // Record step
+        const recorded = actionForRecording
+          ? createRecordedStep(step, actionForRecording, {
             url: this.currentUrl,
             screenshotPath: screenshot?.path,
             screenshotData: screenshot?.data
-          });
-
-          // If using variables in manual mode, inject placeholders back into code
-          if (this.variables.size > 0 && manualInstruction) {
-            recorded.playwrightCode = this.injectPlaceholdersIntoCode(recorded.playwrightCode);
-          }
-
-          this.recordedSteps.push(recorded);
-          this.nextStepNumber = this.recordedSteps.length + 1;
-          this.consumeUserCorrection();
-
-          this.emit('event', {
-            type: 'step_recorded',
+          })
+          : {
+            stepNumber: step,
+            playwrightCode: playwrightCodeOverride || '',
+            qaSummary: qaSummaryOverride || 'MCP fallback action',
             timestamp: new Date().toISOString(),
-            payload: recorded
-          });
+            url: this.currentUrl,
+            screenshotPath: screenshot?.path,
+            screenshotData: screenshot?.data
+          };
 
-          this.log(`${step}. ${recorded.qaSummary}`);
-
-          if (manualInstruction) {
-            this.addChatMessage('assistant', `Step recorded: ${recorded.qaSummary}`);
-          }
-
-          if (enforceSingleStep) {
-            this.enterManualAwaitingState();
-            this.touch();
-            return;
-          }
-
-          this.touch();
+        if (playwrightCodeOverride) {
+          recorded.playwrightCode = playwrightCodeOverride;
         }
+        if (qaSummaryOverride) {
+          recorded.qaSummary = qaSummaryOverride;
+        }
+
+        // If using variables in manual mode, inject placeholders back into code
+        if (this.variables.size > 0 && manualInstruction) {
+          recorded.playwrightCode = this.injectPlaceholdersIntoCode(recorded.playwrightCode);
+        }
+
+        this.recordedSteps.push(recorded);
+        this.nextStepNumber = this.recordedSteps.length + 1;
+        this.consumeUserCorrection();
+
+        this.emit('event', {
+          type: 'step_recorded',
+          timestamp: new Date().toISOString(),
+          payload: recorded
+        });
+
+        this.log(`${step}. ${recorded.qaSummary}`);
+
+        if (manualInstruction) {
+          this.addChatMessage('assistant', `Step recorded: ${recorded.qaSummary}`);
+        }
+
+        if (enforceSingleStep) {
+          this.enterManualAwaitingState();
+          this.touch();
+          return;
+        }
+
+        this.touch();
       }
 
       // Max steps reached
@@ -397,30 +430,39 @@ export class LiveTestGenerator extends EventEmitter {
   /**
    * Call AI to decide next action
    */
-  private async decideNextAction(pageState: string, previousError?: string, screenshot?: string): Promise<AIAction> {
+  private async decideNextAction(pageState: string, previousError?: string, screenshot?: string, tools?: Tool[]): Promise<AIAction> {
     const prompt = this.buildContextualPrompt(pageState, previousError, screenshot);
 
     this.emit('event', {
       type: 'ai_thinking',
       timestamp: new Date().toISOString(),
-      payload: { prompt, hasScreenshot: !!screenshot }
+      payload: { prompt, hasScreenshot: !!screenshot, hasTools: !!tools }
     });
 
-    let responseText: string;
+    let response: AIResponse;
 
     try {
       switch (this.provider) {
         case 'anthropic':
-          responseText = await this.callAnthropic(prompt, screenshot);
+          response = await this.callAnthropic(prompt, screenshot, tools);
           break;
         case 'openai':
-          responseText = await this.callOpenAI(prompt, screenshot);
+          response = await this.callOpenAI(prompt, screenshot, tools);
           break;
         case 'gemini':
-          responseText = await this.callGemini(prompt, screenshot);
+          response = await this.callGemini(prompt, screenshot, tools);
           break;
         default:
           throw new Error(`Unsupported provider: ${this.provider}`);
+      }
+
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        throw new Error('Received tool calls when JSON action was expected');
+      }
+
+      const responseText = response.text;
+      if (!responseText) {
+        throw new Error('AI returned an empty response');
       }
 
       // Parse JSON response
@@ -451,6 +493,11 @@ export class LiveTestGenerator extends EventEmitter {
       this.recordedSteps,
       this.options.successCriteria
     );
+
+    const chatHistory = this.formatChatHistoryForPrompt();
+    if (chatHistory) {
+      prompt += `\n\nCHAT HISTORY:\n${chatHistory}\n\nUse the conversation above to stay consistent with prior user feedback and assistant responses.`;
+    }
 
     if (this.credential) {
       prompt += `\n\nCREDENTIALS AVAILABLE:\n- Name: ${this.credential.name}\n- Username: ${this.credential.username
@@ -493,7 +540,7 @@ export class LiveTestGenerator extends EventEmitter {
     return prompt;
   }
 
-  private async callAnthropic(prompt: string, screenshot?: string): Promise<string> {
+  private async callAnthropic(prompt: string, screenshot?: string, tools?: Tool[]): Promise<AIResponse> {
     const client = new Anthropic({ apiKey: this.apiKey });
 
     // Build message content with optional screenshot
@@ -504,22 +551,38 @@ export class LiveTestGenerator extends EventEmitter {
       ]
       : prompt;
 
-    const message = await client.messages.create({
+    const params: any = {
       model: 'claude-3-5-sonnet-20241022',
       max_tokens: 1000,
       system: AGENT_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: messageContent }]
-    });
+    };
 
-    const content = message.content[0];
-    if (content.type !== 'text') {
-      throw new Error('Unexpected response type from Anthropic');
+    if (tools && tools.length > 0) {
+      params.tools = tools.map(t => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.inputSchema
+      }));
     }
 
-    return content.text;
+    const message = await client.messages.create(params);
+
+    let text: string | undefined;
+    const toolCalls: ToolCall[] = [];
+
+    for (const block of message.content) {
+      if (block.type === 'text' && !text) {
+        text = block.text;
+      } else if (block.type === 'tool_use') {
+        toolCalls.push({ name: block.name, args: block.input });
+      }
+    }
+
+    return { text, toolCalls: toolCalls.length ? toolCalls : undefined };
   }
 
-  private async callOpenAI(prompt: string, screenshot?: string): Promise<string> {
+  private async callOpenAI(prompt: string, screenshot?: string, tools?: Tool[]): Promise<AIResponse> {
     const client = new OpenAI({ apiKey: this.apiKey, baseURL: this.baseUrl });
 
     // Build messages with optional screenshot
@@ -539,53 +602,336 @@ export class LiveTestGenerator extends EventEmitter {
         { role: 'user', content: prompt }
       ];
 
-    const completion = await client.chat.completions.create({
+    const params: any = {
       model: 'gpt-4o',
       messages,
       max_tokens: 1000,
-      response_format: { type: 'json_object' }
-    });
+    };
 
-    const content = completion.choices[0]?.message?.content;
-    if (!content) {
+    if (tools && tools.length > 0) {
+      params.tools = tools.map(t => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema
+        }
+      }));
+      // If tools are present, we don't force JSON object response format as it conflicts with tool_calls
+    } else {
+      params.response_format = { type: 'json_object' };
+    }
+
+    const completion = await client.chat.completions.create(params);
+
+    const message = completion.choices[0]?.message;
+    if (!message) {
       throw new Error('No response from OpenAI');
     }
 
-    return content;
+    let text: string | undefined;
+    const messageContent: any = message.content as any;
+    if (typeof messageContent === 'string') {
+      text = messageContent;
+    } else if (Array.isArray(messageContent)) {
+      text = messageContent
+        .map((part: any) => {
+          if (typeof part === 'string') return part;
+          if (part?.type === 'text') return part.text;
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    }
+
+    const toolCalls: ToolCall[] = [];
+    if (message.tool_calls) {
+      for (const call of message.tool_calls as any[]) {
+        const fn = (call as any).function || (call as any).function_call;
+        let args: any;
+        try {
+          args = fn?.arguments ? JSON.parse(fn.arguments) : {};
+        } catch {
+          args = fn?.arguments || {};
+        }
+        toolCalls.push({
+          name: fn?.name || 'unknown',
+          args
+        });
+      }
+    }
+
+    return { text, toolCalls: toolCalls.length ? toolCalls : undefined };
   }
 
-  private async callGemini(prompt: string, screenshot?: string): Promise<string> {
+  private async callGemini(prompt: string, screenshot?: string, tools?: Tool[]): Promise<AIResponse> {
     const genAI = new GoogleGenAI({ apiKey: this.apiKey });
 
     // Build content parts with optional screenshot
     const parts = screenshot
       ? [
-        { inline_data: { mime_type: 'image/png', data: screenshot } },
+        { inlineData: { mimeType: 'image/png', data: Buffer.from(screenshot, 'base64') } },
         { text: prompt }
       ]
-      : prompt;
+      : [{ text: prompt }];
 
-    const result = await genAI.models.generateContent({
+    const request: any = {
       model: 'gemini-2.5-pro',
-      contents: parts,
-      config: {
+      contents: [{ role: 'user', parts }], // The SDK expects 'contents' to be an array of Content objects
+      generationConfig: {
         systemInstruction: AGENT_SYSTEM_PROMPT,
-        responseMimeType: 'application/json'
       }
-    });
+    };
 
-    const text = result.text;
-    if (!text) {
-      throw new Error('No response from Gemini');
+    if (tools && tools.length > 0) {
+      // Gemini tool format
+      request.tools = [{
+        function_declarations: tools.map(t => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema
+        }))
+      }];
+    } else {
+      request.generationConfig.responseMimeType = 'application/json';
     }
 
-    return text;
+    const result = await genAI.models.generateContent(request);
+
+    const toolCalls: ToolCall[] = [];
+
+    // @ts-ignore - functionCalls() might be missing from type definition but exists at runtime or we check candidates
+    const functionCalls = typeof (result as any).functionCalls === 'function' ? (result as any).functionCalls() : undefined;
+    const candidates = (result as any).candidates || (result as any).response?.candidates;
+
+    if (functionCalls && functionCalls.length > 0) {
+      for (const call of functionCalls as any[]) {
+        toolCalls.push({ name: call.name || 'unknown', args: call.args || {} });
+      }
+    } else if (candidates && candidates[0]?.content?.parts) {
+      const candidateParts = candidates[0].content.parts;
+      for (const part of candidateParts as any[]) {
+        if (part.functionCall) {
+          toolCalls.push({ name: part.functionCall.name || 'unknown', args: part.functionCall.args || {} });
+        }
+      }
+    }
+
+    let text: string | undefined = (result as any).text;
+    if (!text && candidates && candidates[0]?.content?.parts) {
+      const candidateParts = candidates[0].content.parts;
+      text = candidateParts
+        .map((part: any) => part.text || '')
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    }
+
+    return { text, toolCalls: toolCalls.length ? toolCalls : undefined };
+  }
+
+  /**
+   * Attempt to recover from a failure using MCP tools
+   */
+  private async attemptMCPFallback(stepNumber: number, error: string): Promise<MCPFallbackResult> {
+    if (!this.mcpAdapter) return { success: false };
+
+    // Capture screenshot for context
+    const screenshot = await this.captureFailureScreenshot(stepNumber, 999); // 999 to indicate fallback
+    const pageState = await capturePageState(this.page!);
+    const formattedState = formatPageStateForAI(pageState);
+
+    const tools = this.mcpAdapter.getTools();
+
+    const prompt = `The previous action failed with error: "${error}".
+      
+      Current Page State:
+      ${formattedState}
+      
+      Please use the provided tools to accomplish the goal or fix the error.
+      Goal: ${this.options.goal}
+      
+      Analyze the error and the page state, then call the appropriate tool to proceed.
+      If you cannot fix it, do not call any tools.`;
+
+    this.log(`🛠️ MCP Fallback: Asking AI to use tools...`);
+
+    try {
+      let response: AIResponse;
+      switch (this.provider) {
+        case 'anthropic':
+          response = await this.callAnthropic(prompt, screenshot, tools);
+          break;
+        case 'openai':
+          response = await this.callOpenAI(prompt, screenshot, tools);
+          break;
+        case 'gemini':
+          response = await this.callGemini(prompt, screenshot, tools);
+          break;
+        default:
+          return { success: false };
+      }
+
+      const toolCalls = response.toolCalls || [];
+
+      if (!toolCalls.length) {
+        if (response.text) {
+          this.log(`MCP Fallback response was text: ${response.text.substring(0, 120)}...`);
+        } else {
+          this.log(`MCP Fallback: AI decided not to use any tools.`);
+        }
+        return { success: false };
+      }
+
+      let recordedAction: AIAction | undefined;
+      let playwrightCodeOverride: string | undefined;
+      let qaSummaryOverride: string | undefined;
+      const executedNames: string[] = [];
+
+      // Execute tools
+      for (const call of toolCalls) {
+        this.log(`🛠️ Executing tool: ${call.name} with args ${JSON.stringify(call.args)}`);
+        const result = await this.mcpAdapter.callTool(call.name, call.args);
+
+        if (result.isError) {
+          this.log(`❌ Tool execution failed: ${result.content[0].text}`);
+          return { success: false };
+        }
+
+        executedNames.push(call.name);
+        this.log(`✓ Tool output: ${result.content[0].text}`);
+
+        const mapped = this.mapToolCallToRecording(call);
+        if (mapped?.action && !recordedAction) {
+          recordedAction = mapped.action;
+        }
+        if (mapped?.playwrightCode) {
+          playwrightCodeOverride = mapped.playwrightCode;
+        }
+        if (mapped?.qaSummary) {
+          qaSummaryOverride = mapped.qaSummary;
+        }
+      }
+
+      if (!qaSummaryOverride && executedNames.length) {
+        qaSummaryOverride = `MCP fallback executed: ${executedNames.join(', ')}`;
+      }
+
+      // Update current URL after fallback actions
+      if (this.page) {
+        this.currentUrl = this.page.url();
+      }
+
+      return {
+        success: true,
+        recordedAction,
+        playwrightCodeOverride,
+        qaSummaryOverride
+      };
+
+    } catch (err: any) {
+      this.log(`❌ MCP Fallback error: ${err.message}`);
+      return { success: false };
+    }
+  }
+
+  /**
+   * Map an MCP tool call to an AIAction or explicit code/summary for recording
+   */
+  private mapToolCallToRecording(call: ToolCall): {
+    action?: AIAction;
+    playwrightCode?: string;
+    qaSummary?: string;
+  } | null {
+    const args = call.args || {};
+    const selector = typeof args.selector === 'string' ? args.selector : undefined;
+
+    switch (call.name) {
+      case 'click':
+        if (!selector) return null;
+        return {
+          action: { action: 'click', selector, reasoning: `MCP fallback: click ${selector}` }
+        };
+
+      case 'fill':
+        if (!selector || typeof args.value !== 'string') return null;
+        return {
+          action: { action: 'fill', selector, value: args.value, reasoning: `MCP fallback: fill ${selector}` }
+        };
+
+      case 'select_option':
+        if (!selector || typeof args.value !== 'string') return null;
+        return {
+          action: { action: 'select', selector, value: args.value, reasoning: `MCP fallback: select option ${args.value}` }
+        };
+
+      case 'press_key': {
+        const key = typeof args.key === 'string' ? args.key : undefined;
+        if (!key) return null;
+        return {
+          action: { action: 'press', value: key, reasoning: `MCP fallback: press key ${key}` }
+        };
+      }
+
+      case 'hover': {
+        if (!selector) return null;
+        return {
+          playwrightCode: `await page.hover(${JSON.stringify(selector)});`,
+          qaSummary: `Hover ${selector}`
+        };
+      }
+
+      case 'scroll': {
+        if (selector) {
+          return {
+            playwrightCode: `await page.locator(${JSON.stringify(selector)}).scrollIntoViewIfNeeded();`,
+            qaSummary: `Scroll ${selector} into view`
+          };
+        }
+
+        const direction = typeof args.direction === 'string' ? args.direction : 'down';
+        let scrollCode = '';
+        if (direction === 'bottom') {
+          scrollCode = `await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));`;
+        } else if (direction === 'top') {
+          scrollCode = `await page.evaluate(() => window.scrollTo(0, 0));`;
+        } else if (direction === 'up') {
+          scrollCode = `await page.evaluate(() => window.scrollBy(0, -500));`;
+        } else {
+          scrollCode = `await page.evaluate(() => window.scrollBy(0, 500));`;
+        }
+        return {
+          playwrightCode: scrollCode,
+          qaSummary: `Scroll ${direction}`
+        };
+      }
+
+      case 'evaluate_javascript': {
+        if (typeof args.script !== 'string') return null;
+        const script = args.script.trim();
+        return {
+          playwrightCode: `await page.evaluate(() => { ${script} });`,
+          qaSummary: 'Execute custom script via MCP fallback'
+        };
+      }
+
+      case 'get_page_content':
+        return {
+          playwrightCode: `const content = await page.content();\nconsole.log(content);`,
+          qaSummary: 'Capture page content via MCP fallback'
+        };
+
+      default:
+        return null;
+    }
   }
 
   /**
    * Finalize and cleanup
+   * @param closeBrowser - If true, close the browser regardless of failure state. If false, keep it open. If undefined, use smart logic based on status.
    */
-  private async finalize(): Promise<void> {
+  private async finalize(closeBrowser?: boolean): Promise<void> {
     this.clearManualInstruction();
     this.emit('event', {
       type: 'completed',
@@ -597,12 +943,32 @@ export class LiveTestGenerator extends EventEmitter {
     this.isPaused = false;
 
     if (this.browser) {
-      if (this.options.keepBrowserOpen) {
-        this.log('Browser left open for inspection.');
+      // Determine whether to close browser
+      let shouldClose = false;
+
+      if (closeBrowser === true) {
+        // Explicit request to close (e.g., user stop, restart)
+        shouldClose = true;
+      } else if (closeBrowser === false) {
+        // Explicit request to keep open
+        shouldClose = false;
       } else {
+        // Smart logic: keep open on failures/errors, close on success (unless keepBrowserOpen)
+        const isFailed = this.status === 'failed' || this.error !== undefined;
+        if (isFailed) {
+          shouldClose = false; // Keep browser open on failures so user can see what went wrong
+        } else {
+          shouldClose = !this.options.keepBrowserOpen; // On success, respect keepBrowserOpen setting
+        }
+      }
+
+      if (shouldClose) {
         await this.browser.close();
         this.browser = null;
         this.page = null;
+        this.log('Browser closed.');
+      } else {
+        this.log('Browser left open for inspection.');
       }
     }
   }
@@ -914,7 +1280,7 @@ export class LiveTestGenerator extends EventEmitter {
     this.isRunning = false;
     this.updateStatus('stopped');
     this.log('Generation stopped by user request.');
-    await this.finalize();
+    await this.finalize(true); // Close browser on user stop
   }
 
   async restart(): Promise<void> {
@@ -945,6 +1311,23 @@ export class LiveTestGenerator extends EventEmitter {
     // Restart
     this.log('Restarting generation from beginning...');
     await this.start();
+  }
+
+  /**
+   * Cleanup resources (e.g., when user leaves the generation screen)
+   * Closes the browser unconditionally
+   */
+  async cleanup(): Promise<void> {
+    this.isRunning = false;
+    this.isPaused = false;
+    this.clearManualInstruction();
+
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+      this.page = null;
+      this.log('Browser closed on session cleanup.');
+    }
   }
 
   markTestPersisted(metadata: TestMetadata): void {
@@ -1235,12 +1618,17 @@ export class LiveTestGenerator extends EventEmitter {
     this.updateStatus('thinking');
     this.log(`Creating plan for: "${trimmed}"`);
 
-    const prompt = buildStepPlannerPrompt(
+    let prompt = buildStepPlannerPrompt(
       resolved,
       this.currentUrl,
       formatPageStateForAI(pageState),
       this.recordedSteps
     );
+
+    const chatHistory = this.formatChatHistoryForPrompt();
+    if (chatHistory) {
+      prompt += `\n\nCHAT HISTORY:\n${chatHistory}\n\nUse this dialogue to stay aligned with previous user feedback while planning.`;
+    }
 
     try {
       let responseText: string;
@@ -1359,93 +1747,62 @@ export class LiveTestGenerator extends EventEmitter {
 
     this.updateStatus('running');
 
-    // Execute each planned step with retry logic
+    // Execute each planned step with MCP fallback
     for (let i = 0; i < plan.steps.length; i++) {
       const plannedStep = plan.steps[i];
       const stepNumber = this.nextStepNumber;
 
       this.log(`Executing step ${i + 1}/${plan.steps.length}: ${plannedStep.description}`);
 
-      // Retry logic: 2 total attempts (original + 1 retry with screenshot)
-      const maxRetries = 1;
-      let retryCount = 0;
-      let lastError: string | undefined;
-      let failureScreenshot: string | undefined;
-      let result: { success: boolean; error?: string } | undefined;
-      let action: AIAction | undefined;
+      let actionForRecording: AIAction | undefined = {
+        action: plannedStep.action,
+        selector: plannedStep.selector,
+        value: plannedStep.value,
+        reasoning: plannedStep.description
+      };
+      let playwrightCodeOverride: string | undefined;
+      let qaSummaryOverride: string | undefined;
 
-      while (retryCount <= maxRetries) {
-        // On retry, ask AI to re-decide with screenshot
-        if (retryCount > 0 && lastError) {
-          this.log(`🔄 Retry ${retryCount}/${maxRetries}: Re-planning with screenshot...`);
+      const result = await executeAction(this.page, actionForRecording);
 
-          // Capture page state for AI to re-decide
-          const pageState = await capturePageState(this.page);
-          const formattedState = formatPageStateForAI(pageState);
+      if (!result.success) {
+        this.log(`⚠️ Planned step failed: ${result.error}. Trying MCP fallback...`);
+        const mcpResult = await this.attemptMCPFallback(stepNumber, result.error || 'Unknown error');
 
-          // Build prompt for re-decision
-          const retryPrompt = `The previous attempt to "${plannedStep.description}" failed with error:\n${lastError}\n\n${failureScreenshot ? '📸 A screenshot is provided showing the current page state.\n\n' : ''
-            }Current page state:\n${formattedState}\n\nProvide a DIFFERENT approach to accomplish: "${plannedStep.description}"`;
-
-          try {
-            // Get new decision from AI with screenshot
-            action = await this.decideNextAction(formattedState, lastError, failureScreenshot);
-          } catch (error: any) {
-            this.log(`⚠️ Failed to get retry decision from AI: ${error.message}`);
-            break;
-          }
+        if (mcpResult.success) {
+          actionForRecording = mcpResult.recordedAction ?? actionForRecording;
+          playwrightCodeOverride = mcpResult.playwrightCodeOverride;
+          qaSummaryOverride = mcpResult.qaSummaryOverride;
+          this.log(`✓ MCP fallback succeeded for planned step`);
         } else {
-          // First attempt: use original planned action
-          action = {
-            action: plannedStep.action,
-            selector: plannedStep.selector,
-            value: plannedStep.value,
-            reasoning: plannedStep.description
-          };
+          this.log(`❌ Step failed after MCP fallback: ${result.error}`);
+          this.addChatMessage(
+            'assistant',
+            `I wasn't able to complete the step "${plannedStep.description}".\n\nPlease provide clearer guidance about which element to interact with, or try using the Pick Element tool to select it visually from the browser.`,
+            true
+          );
+          this.enterManualAwaitingState();
+          this.touch();
+          return;
         }
-
-        // Execute the action
-        result = await executeAction(this.page, action);
-
-        if (result.success) {
-          // Success! Break out of retry loop
-          break;
-        } else {
-          // Failed - capture screenshot and increment retry
-          lastError = result.error;
-          retryCount++;
-
-          if (retryCount <= maxRetries) {
-            // Capture failure screenshot for AI
-            failureScreenshot = await this.captureFailureScreenshot(stepNumber, retryCount);
-            this.log(`⚠️ Attempt ${retryCount}/${maxRetries + 1} failed: ${result.error}`);
-          }
-        }
-      }
-
-      // After all retries, check final result
-      if (!result || !result.success) {
-        // All attempts failed - notify user
-        this.log(`❌ Step failed after ${maxRetries + 1} attempts: ${lastError}`);
-        this.addChatMessage(
-          'assistant',
-          `Step "${plannedStep.description}" failed after ${maxRetries + 1} attempts:\n${lastError}\n\nPlease provide a new instruction or adjust your approach.`,
-          true
-        );
-        this.enterManualAwaitingState();
-        this.touch();
-        return;
       }
 
       // Step succeeded - record it
       await this.page.waitForTimeout(500);
       const screenshot = await this.captureStepScreenshot(stepNumber);
 
-      const recorded = createRecordedStep(stepNumber, action!, {
+      const recorded = createRecordedStep(stepNumber, actionForRecording, {
         url: this.currentUrl,
         screenshotPath: screenshot?.path,
         screenshotData: screenshot?.data
       });
+
+      if (playwrightCodeOverride) {
+        recorded.playwrightCode = playwrightCodeOverride;
+      }
+      if (qaSummaryOverride) {
+        recorded.qaSummary = qaSummaryOverride;
+      }
 
       // Inject placeholders back if using variables
       if (this.variables.size > 0) {
@@ -1784,6 +2141,21 @@ export class LiveTestGenerator extends EventEmitter {
     }
   }
 
+  private formatChatHistoryForPrompt(): string | undefined {
+    if (!this.chat.length) {
+      return undefined;
+    }
+
+    const relevant = this.chat.filter((msg) => msg.role === 'user' || msg.role === 'assistant');
+    if (!relevant.length) {
+      return undefined;
+    }
+
+    return relevant
+      .map((msg) => `${msg.role === 'user' ? 'User' : 'AI'}: ${msg.message}`)
+      .join('\n');
+  }
+
   private addChatMessage(role: ChatMessage['role'], message: string, isError: boolean = false): ChatMessage {
     const chatMessage: ChatMessage = {
       id: `chat-${Date.now()}-${crypto.randomUUID()}`,
@@ -1886,7 +2258,7 @@ export class LiveTestGenerator extends EventEmitter {
       return;
     }
 
-    this.log(`❌ Action failed after 3 attempts: ${error}`);
+    this.log(`❌ Action failed after MCP fallback: ${error}`);
     this.log(`Browser left open for manual intervention.`);
 
     // Capture "before" state for comparison after user acts
@@ -1917,12 +2289,11 @@ export class LiveTestGenerator extends EventEmitter {
     this.log(`Step-by-step instruction "${failedInstruction}" failed: ${error}`);
     const summary = screenshot
       ? await this.generateErrorSummary(failedAction, error, screenshot)
-      : error;
-    const message =
-      summary && summary !== error
-        ? `I couldn't complete "${failedInstruction}". ${summary}`
-        : `I couldn't complete "${failedInstruction}". Error: ${error}`;
-    this.addChatMessage('assistant', `${message}\n\nTry describing the element differently or reference its label/text.`, true);
+      : null;
+    const message = summary && summary !== error
+      ? `I wasn't able to process the step "${failedInstruction}". ${summary}`
+      : `I wasn't able to process the step "${failedInstruction}".`;
+    this.addChatMessage('assistant', `${message}\n\nTry describing the element more clearly, reference its label or visible text, or use the Pick Element tool to select it visually from the browser.`, true);
     this.enterManualAwaitingState();
   }
 
@@ -1932,7 +2303,7 @@ export class LiveTestGenerator extends EventEmitter {
     this.log(`Step-by-step instruction "${failedInstruction}" encountered an error: ${message}`);
     this.addChatMessage(
       'assistant',
-      `Something went wrong while executing "${failedInstruction}". ${message}\nPlease adjust the instruction and try again.`,
+      `I encountered an issue while executing "${failedInstruction}".\n\nTry providing more specific details about the element you want to interact with, or use the Pick Element tool to select it visually from the browser.`,
       true
     );
     this.enterManualAwaitingState();

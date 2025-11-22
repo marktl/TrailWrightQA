@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { TestCodeGenerator } from '../testCodeGenerator.js';
-import type { RecordedStep, VariableDefinition } from '../../types.js';
+import type { TestMetadata, VariableDefinition } from '../../types.js';
+import type { RecordedStep } from '../../../../shared/types.js';
 
 describe('TestCodeGenerator', () => {
   const generator = new TestCodeGenerator();

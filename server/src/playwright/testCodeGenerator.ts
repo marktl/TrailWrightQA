@@ -1,4 +1,5 @@
-import type { TestMetadata, VariableDefinition, RecordedStep } from '../types.js';
+import type { TestMetadata, VariableDefinition } from '../types.js';
+import type { RecordedStep } from '../../../shared/types.js';
 
 export interface GenerateTestFileOptions {
   testId: string;
@@ -19,7 +20,7 @@ export class TestCodeGenerator {
   generateTestFile(options: GenerateTestFileOptions): string {
     const { testId, testName, startUrl, steps, variables, metadata } = options;
 
-    const hasVariables = variables && variables.length > 0;
+    const hasVariables = !!variables && variables.length > 0;
     const metadataHeader = this.generateMetadataHeader(testId, testName, metadata, hasVariables);
     const imports = this.generateImports(hasVariables);
     const testBody = hasVariables

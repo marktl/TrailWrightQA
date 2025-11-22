@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG } from './config.js';
 import { initStorage } from './storage/index.js';
+import { cleanupOrphanedTestArtifacts } from './storage/cleanup.js';
 import { ensurePlaywrightConfig } from './playwright/config.js';
 import testsRouter from './routes/tests.js';
 import runsRouter from './routes/runs.js';
@@ -576,6 +577,18 @@ if (hasClientBuild) {
 // Initialize storage on startup
 await initStorage(CONFIG.DATA_DIR);
 console.log(`[storage] Data directory: ${CONFIG.DATA_DIR}`);
+
+const cleanupSummary = await cleanupOrphanedTestArtifacts(CONFIG.DATA_DIR);
+const cleanupCount =
+  cleanupSummary.removedTestFolders.length +
+  cleanupSummary.removedRunFolders.length +
+  cleanupSummary.removedDataFiles.length;
+
+if (cleanupCount > 0) {
+  console.log(
+    `[storage] Cleaned ${cleanupCount} orphaned items (test folders: ${cleanupSummary.removedTestFolders.length}, runs: ${cleanupSummary.removedRunFolders.length}, data files: ${cleanupSummary.removedDataFiles.length})`
+  );
+}
 
 await ensurePlaywrightConfig(CONFIG.DATA_DIR);
 console.log(`[playwright] Configured`);

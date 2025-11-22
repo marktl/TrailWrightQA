@@ -18,7 +18,7 @@ router.post('/generate-step', async (req, res) => {
 
     const config = await loadConfig(CONFIG.DATA_DIR);
 
-    if (!config.ai?.provider || !config.ai?.apiKey) {
+    if (!config.apiProvider || !config.apiKey) {
       return res.status(400).json({
         error: 'AI provider not configured. Configure in Settings.'
       });
@@ -41,8 +41,8 @@ Rules:
 - Return ONLY valid JSON, no markdown formatting`;
 
     const aiResponse = await chatWithAI({
-      provider: config.ai.provider,
-      apiKey: config.ai.apiKey,
+      provider: config.apiProvider,
+      apiKey: config.apiKey,
       message: `Generate Playwright code for: ${prompt}`,
       history: [{ id: '1', role: 'system', message: systemPrompt, timestamp: new Date().toISOString() }]
     });

@@ -175,13 +175,13 @@ export default function TestWorkspace() {
   const [showCSVImport, setShowCSVImport] = useState(false);
 
   // Step editing state
-  const [editedSteps, setEditedSteps] = useState<Array<{number: number; qaSummary: string; playwrightCode: string}>>([]);
+  const [editedSteps, setEditedSteps] = useState<Array<{ number: number; qaSummary: string; playwrightCode: string }>>([]);
   const [stepsModified, setStepsModified] = useState(false);
   const [savingSteps, setSavingSteps] = useState(false);
   const [insertAfterStep, setInsertAfterStep] = useState<number | null>(null);
   const [insertPrompt, setInsertPrompt] = useState('');
   const [insertingSteps, setInsertingSteps] = useState(false);
-  const [insertedStepsPreview, setInsertedStepsPreview] = useState<Array<{qaSummary: string; playwrightCode: string}>>([]);
+  const [insertedStepsPreview, setInsertedStepsPreview] = useState<Array<{ qaSummary: string; playwrightCode: string }>>([]);
   const [insertionSessionId, setInsertionSessionId] = useState<string | null>(null);
   const [initializingInsertion, setInitializingInsertion] = useState(false);
   const [insertionError, setInsertionError] = useState<string | null>(null);
@@ -480,16 +480,16 @@ export default function TestWorkspace() {
       setTest((prev) =>
         prev
           ? {
-              ...prev,
-              metadata: {
-                ...prev.metadata,
-                name: trimmedName,
+            ...prev,
+            metadata: {
+              ...prev.metadata,
+              name: trimmedName,
               description: description.trim() || undefined,
-                tags,
-                folder: folder.trim() || undefined,
-                credentialId: credentialId || undefined
-              }
+              tags,
+              folder: folder.trim() || undefined,
+              credentialId: credentialId || undefined
             }
+          }
           : prev
       );
       setTimeout(() => setMetaMessage(null), 2500);
@@ -577,9 +577,9 @@ export default function TestWorkspace() {
       setRunState((prev) =>
         prev
           ? {
-              ...prev,
-              chat: response.messages ?? prev.chat
-            }
+            ...prev,
+            chat: response.messages ?? prev.chat
+          }
           : prev
       );
     } catch (err) {
@@ -877,7 +877,10 @@ export default function TestWorkspace() {
             <div className="rounded-lg bg-white p-6 shadow" ref={runDetailsRef}>
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h1 className="text-3xl font-bold text-gray-900">{testTitle}</h1>
+                  <div className="flex items-center gap-3">
+                    <img src="/favicon.png" alt="TrailWright Logo" className="h-8 w-8 object-contain" />
+                    <h1 className="text-3xl font-bold text-gray-900">{testTitle}</h1>
+                  </div>
                   <p className="text-sm text-gray-500">Prompt, run, and review in one window.</p>
                 </div>
                 <span
@@ -892,21 +895,19 @@ export default function TestWorkspace() {
               <div className="flex border-b border-gray-200 mb-4">
                 <button
                   onClick={() => setActiveTab('details')}
-                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                    activeTab === 'details'
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'details'
                       ? 'border-blue-500 text-blue-600'
                       : 'border-transparent text-gray-500 hover:text-gray-700'
-                  }`}
+                    }`}
                 >
                   Details
                 </button>
                 <button
                   onClick={() => setActiveTab('data')}
-                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                    activeTab === 'data'
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'data'
                       ? 'border-blue-500 text-blue-600'
                       : 'border-transparent text-gray-500 hover:text-gray-700'
-                  }`}
+                    }`}
                 >
                   Data {variables.length > 0 && `(${variables.length})`}
                 </button>
@@ -916,120 +917,120 @@ export default function TestWorkspace() {
               {activeTab === 'details' && (
                 <>
                   <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Name</label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Tags (comma separated)</label>
-                  <input
-                    type="text"
-                    value={tagsInput}
-                    onChange={(e) => setTagsInput(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Category / Suite</label>
-                  <input
-                    type="text"
-                    value={folder}
-                    onChange={(e) => setFolder(e.target.value)}
-                    placeholder="e.g., Authentication"
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <p className="text-xs text-gray-500">Organize tests by product area or release suite.</p>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Default Credential</label>
-                  {credentialLoadError ? (
-                    <p className="text-xs text-red-600">{credentialLoadError}</p>
-                  ) : (
-                    <select
-                      value={credentialId}
-                      disabled={loadingCredentials}
-                      onChange={(e) => setCredentialId(e.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="">No credential</option>
-                      {credentials.map((cred) => (
-                        <option key={cred.id} value={cred.id}>
-                          {cred.name} · {cred.username}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <p className="text-xs text-gray-500">
-                    Manage credentials in Settings. They are injected at runtime.
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-4 space-y-2">
-                <label className="text-sm font-medium text-gray-700">Description</label>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  rows={3}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              {goal && goal !== description && (
-                <div className="mt-4 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-medium text-gray-700">Goal</label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRegenUrl(defaultStartUrl || '');
-                        setRegenMaxSteps('20');
-                        setRegenMessage(null);
-                        setShowRegenModal(true);
-                      }}
-                      className="text-xs font-medium text-blue-600 hover:text-blue-800"
-                    >
-                      Copy to new AI test
-                    </button>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Name</label>
+                      <input
+                        type="text"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Tags (comma separated)</label>
+                      <input
+                        type="text"
+                        value={tagsInput}
+                        onChange={(e) => setTagsInput(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Category / Suite</label>
+                      <input
+                        type="text"
+                        value={folder}
+                        onChange={(e) => setFolder(e.target.value)}
+                        placeholder="e.g., Authentication"
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <p className="text-xs text-gray-500">Organize tests by product area or release suite.</p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Default Credential</label>
+                      {credentialLoadError ? (
+                        <p className="text-xs text-red-600">{credentialLoadError}</p>
+                      ) : (
+                        <select
+                          value={credentialId}
+                          disabled={loadingCredentials}
+                          onChange={(e) => setCredentialId(e.target.value)}
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">No credential</option>
+                          {credentials.map((cred) => (
+                            <option key={cred.id} value={cred.id}>
+                              {cred.name} · {cred.username}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <p className="text-xs text-gray-500">
+                        Manage credentials in Settings. They are injected at runtime.
+                      </p>
+                    </div>
                   </div>
-                  <textarea
-                    value={goal}
-                    readOnly
-                    rows={2}
-                    className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
-                  />
-                </div>
-              )}
 
-              {successCriteria && (
-                <div className="mt-4 space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Success Criteria</label>
-                  <textarea
-                    value={successCriteria}
-                    readOnly
-                    rows={3}
-                    className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
-                  />
-                </div>
-              )}
+                  <div className="mt-4 space-y-2">
+                    <label className="text-sm font-medium text-gray-700">Description</label>
+                    <textarea
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      rows={3}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
 
-              <div className="mt-4 flex items-center justify-between">
-                <button
-                  onClick={handleSaveMetadata}
-                  disabled={savingMeta}
-                  className="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {savingMeta ? 'Saving…' : 'Save Details'}
-                </button>
-                {metaMessage && (
-                  <span className="text-sm text-gray-600">{metaMessage}</span>
-                )}
-              </div>
+                  {goal && goal !== description && (
+                    <div className="mt-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium text-gray-700">Goal</label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRegenUrl(defaultStartUrl || '');
+                            setRegenMaxSteps('20');
+                            setRegenMessage(null);
+                            setShowRegenModal(true);
+                          }}
+                          className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                        >
+                          Copy to new AI test
+                        </button>
+                      </div>
+                      <textarea
+                        value={goal}
+                        readOnly
+                        rows={2}
+                        className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
+                      />
+                    </div>
+                  )}
+
+                  {successCriteria && (
+                    <div className="mt-4 space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Success Criteria</label>
+                      <textarea
+                        value={successCriteria}
+                        readOnly
+                        rows={3}
+                        className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600"
+                      />
+                    </div>
+                  )}
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <button
+                      onClick={handleSaveMetadata}
+                      disabled={savingMeta}
+                      className="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {savingMeta ? 'Saving…' : 'Save Details'}
+                    </button>
+                    {metaMessage && (
+                      <span className="text-sm text-gray-600">{metaMessage}</span>
+                    )}
+                  </div>
                 </>
               )}
 
@@ -1267,15 +1268,14 @@ export default function TestWorkspace() {
                         return (
                           <div
                             key={step.number}
-                            className={`border-2 rounded-lg p-4 ${
-                              status === 'passed'
+                            className={`border-2 rounded-lg p-4 ${status === 'passed'
                                 ? 'border-emerald-400 bg-emerald-50'
                                 : status === 'failed'
-                                ? 'border-red-400 bg-red-50'
-                                : isRunning
-                                ? 'border-amber-400 bg-amber-50'
-                                : 'border-gray-200 bg-white'
-                            }`}
+                                  ? 'border-red-400 bg-red-50'
+                                  : isRunning
+                                    ? 'border-amber-400 bg-amber-50'
+                                    : 'border-gray-200 bg-white'
+                              }`}
                           >
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex-1">
@@ -1521,9 +1521,8 @@ export default function TestWorkspace() {
                       return (
                         <div
                           key={run.id}
-                          className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2 ${
-                            isActive ? 'border-blue-300 bg-blue-50' : 'border-gray-200'
-                          }`}
+                          className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2 ${isActive ? 'border-blue-300 bg-blue-50' : 'border-gray-200'
+                            }`}
                         >
                           <div className="flex-1">
                             <p className="font-medium text-gray-900">{formatTimestamp(run.startedAt)}</p>
@@ -1557,11 +1556,10 @@ export default function TestWorkspace() {
                           <div className="flex flex-col items-end gap-2">
                             <button
                               onClick={() => handleSelectRun(run.id)}
-                              className={`rounded-lg border px-3 py-1 text-sm ${
-                                isActive
+                              className={`rounded-lg border px-3 py-1 text-sm ${isActive
                                   ? 'border-blue-500 text-blue-700 bg-blue-100'
                                   : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                              }`}
+                                }`}
                             >
                               {isActive ? 'Viewing' : 'View'}
                             </button>

@@ -975,7 +975,10 @@ export default function GenerationViewer() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Live AI Test Generation</h1>
+            <div className="flex items-center gap-3">
+              <img src="/favicon.png" alt="TrailWright Logo" className="h-8 w-8 object-contain" />
+              <h1 className="text-3xl font-bold text-gray-900">Live AI Test Generation</h1>
+            </div>
             <p className="text-sm text-gray-600 mt-1">Session: {sessionId.slice(0, 16)}...</p>
           </div>
           <button
@@ -1315,7 +1318,7 @@ export default function GenerationViewer() {
                     <div className="flex-1">
                       <p className={`text-xs font-medium mb-1 ${msg.isError ? 'text-red-800' : 'text-gray-500'}`}>
                         {msg.isError
-                          ? '⚠️ Action Failed - Help Needed'
+                          ? '⚠️ Need More Guidance'
                           : msg.role === 'user'
                             ? 'You'
                             : msg.role === 'assistant'

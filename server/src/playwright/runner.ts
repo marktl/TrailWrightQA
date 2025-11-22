@@ -401,10 +401,10 @@ export async function finalizeRunExecution(
   if (error && status === 'failed') {
     try {
       const config = await loadConfig(context.dataDir);
-      if (config.ai?.provider && config.ai?.apiKey) {
+      if (config.apiProvider && config.apiKey) {
         errorSummary = await summarizeError({
-          provider: config.ai.provider,
-          apiKey: config.ai.apiKey,
+          provider: config.apiProvider,
+          apiKey: config.apiKey,
           error,
           stepContext: undefined // Could pass failing step context here
         });
