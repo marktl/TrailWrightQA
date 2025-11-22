@@ -42,6 +42,7 @@ export default function GenerationViewer() {
   const [sessionConfigError, setSessionConfigError] = useState<string | null>(null);
   const [savingSessionConfig, setSavingSessionConfig] = useState(false);
   const [updatingKeepBrowserOpen, setUpdatingKeepBrowserOpen] = useState(false);
+  const [pickedElement, setPickedElement] = useState<{ selector: string; description: string } | null>(null);
   const [activeScreenshotIndex, setActiveScreenshotIndex] = useState<number | null>(null);
   const [savedTest, setSavedTest] = useState<ApiTestMetadata | null>(null);
   const [autoSaveNotice, setAutoSaveNotice] = useState<string | null>(null);
@@ -484,13 +485,20 @@ export default function GenerationViewer() {
     setSendingChat(true);
     try {
       const trimmed = chatInput.trim();
+      let messageToSend = trimmed;
+
+      if (pickedElement) {
+        messageToSend += `\n\nTarget Element: ${pickedElement.selector}`;
+      }
+
       if (stepMode) {
-        await api.sendManualInstruction(sessionId, trimmed);
+        await api.sendManualInstruction(sessionId, messageToSend);
       } else {
-        const { state: updatedState } = await api.sendGenerationChat(sessionId, trimmed);
+        const { state: updatedState } = await api.sendGenerationChat(sessionId, messageToSend);
         setState(updatedState);
       }
       setChatInput('');
+      setPickedElement(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to send message';
       setError(message);
@@ -571,18 +579,13 @@ export default function GenerationViewer() {
           setAutoSaveNotice('Selector copied to clipboard!');
         } catch (err) {
           // Fallback if clipboard write is blocked (e.g. lack of user activation)
-          setAutoSaveNotice('Selector added to input');
+          setAutoSaveNotice('Selector captured');
         }
         setTimeout(() => setAutoSaveNotice(null), 3000);
 
-        // Insert the picked selector into chat input
-        const selectorText = `Using selector: ${result.selector}`;
-        setChatInput((prev) => {
-          const trimmed = prev.trim();
-          if (trimmed) {
-            return `${trimmed}\n\n${selectorText}`;
-          }
-          return selectorText;
+        setPickedElement({
+          selector: result.selector,
+          description: result.description || result.selector
         });
 
         // Focus the textarea
@@ -1418,6 +1421,28 @@ export default function GenerationViewer() {
                 )}
               </div>
             )}
+
+            {pickedElement && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-200 text-xs font-bold text-blue-700">
+                    🎯
+                  </span>
+                  <span className="font-medium">Target:</span>
+                  <span className="font-mono text-xs bg-blue-100 px-1.5 py-0.5 rounded border border-blue-200" title={pickedElement.selector}>
+                    {pickedElement.description}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setPickedElement(null)}
+                  className="text-blue-400 hover:text-blue-600 p-1 rounded hover:bg-blue-100"
+                  title="Remove selection"
+                >
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+            )}
+
             <textarea
               ref={chatTextareaRef}
               value={chatInput}

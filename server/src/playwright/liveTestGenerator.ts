@@ -1003,15 +1003,12 @@ export class LiveTestGenerator extends EventEmitter {
   /**
    * Activate visual element picker - injects UI overlay on page for user to click target element
    */
-  async activateElementPicker(): Promise<{ selector: string }> {
+  async activateElementPicker(): Promise<{ selector: string; description: string }> {
     if (!this.page) {
       throw new Error('Browser not initialized');
     }
 
-    this.log('Element picker activated - click an element in the browser');
-    this.pickedSelector = undefined;
-
-    // Inject element picker script into the page
+    // Inject script to handle element picking
     const pickedElement = await this.page.evaluate(`
       new Promise((resolve) => {
         // Create overlay
@@ -1025,51 +1022,17 @@ export class LiveTestGenerator extends EventEmitter {
         style.textContent = '* { cursor: crosshair !important; }';
         document.head.appendChild(style);
 
-        // Create instruction banner
+        // Create banner
         const banner = document.createElement('div');
-        banner.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #3b82f6; color: white; padding: 16px 24px; border-radius: 8px; font-family: system-ui, -apple-system, sans-serif; font-size: 16px; font-weight: 500; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); z-index: 1000000; pointer-events: none;';
-        banner.textContent = '🎯 Click the element you want to target';
+        banner.textContent = 'Click any element to select it';
+        banner.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #2563eb; color: white; padding: 12px 24px; border-radius: 8px; font-family: system-ui, sans-serif; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000000; pointer-events: none;';
 
         document.body.appendChild(overlay);
         document.body.appendChild(banner);
 
-        let highlightedElement = null;
         let highlightBorder = null;
 
-        // Highlight element on hover
-        const handleMouseMove = (e) => {
-          const target = e.target;
-          if (target === overlay || target === banner || target === highlightBorder) {
-            return;
-          }
-
-          if (highlightedElement !== target) {
-            // Remove previous highlight
-            if (highlightBorder) {
-              highlightBorder.remove();
-            }
-
-            highlightedElement = target;
-
-            // Create highlight border
-            const rect = target.getBoundingClientRect();
-            highlightBorder = document.createElement('div');
-            highlightBorder.style.cssText = 'position: fixed; top: ' + rect.top + 'px; left: ' + rect.left + 'px; width: ' + rect.width + 'px; height: ' + rect.height + 'px; border: 3px solid #fbbf24; background: rgba(251, 191, 36, 0.1); pointer-events: none; z-index: 999998; box-sizing: border-box;';
-            document.body.appendChild(highlightBorder);
-          }
-        };
-
-        // Capture element on click
-        const handleClick = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-
-          const target = e.target;
-          if (target === overlay || target === banner || target === highlightBorder) {
-            return;
-          }
-
-          // Cleanup
+        function cleanup() {
           overlay.remove();
           banner.remove();
           if (highlightBorder) {
@@ -1078,48 +1041,143 @@ export class LiveTestGenerator extends EventEmitter {
           const style = document.getElementById('trailwright-element-picker-style');
           if (style) style.remove();
           
-          document.removeEventListener('mousemove', handleMouseMove);
-          document.removeEventListener('click', handleClick, true);
+          document.removeEventListener('mouseover', handleHover);
+          document.removeEventListener('click', handleClick);
+        }
 
-          // Capture element info
+        function handleHover(e) {
+          if (highlightBorder) highlightBorder.remove();
+          
+          const target = e.target;
+          if (target === overlay || target === banner) return;
+
+          const rect = target.getBoundingClientRect();
+          highlightBorder = document.createElement('div');
+          highlightBorder.style.cssText = 'position: fixed; top: ' + rect.top + 'px; left: ' + rect.left + 'px; width: ' + rect.width + 'px; height: ' + rect.height + 'px; border: 2px solid #2563eb; background: rgba(37, 99, 235, 0.1); pointer-events: none; z-index: 1000000;';
+          document.body.appendChild(highlightBorder);
+        }
+
+        function handleClick(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          
+          const target = e.target;
           const info = {
-            id: target.id || undefined,
-            name: target.getAttribute ? target.getAttribute('name') : undefined,
             tagName: target.tagName.toLowerCase(),
-            className: target.className || undefined,
-            textContent: target.textContent ? target.textContent.trim().substring(0, 50) : undefined,
-            type: target.getAttribute ? target.getAttribute('type') : undefined
+            id: target.id,
+            name: target.getAttribute('name'),
+            type: target.getAttribute('type'),
+            placeholder: target.getAttribute('placeholder'),
+            textContent: target.textContent ? target.textContent.trim().slice(0, 50) : undefined,
+            dataTestId: target.getAttribute('data-testid') || target.getAttribute('data-test-id') || target.getAttribute('data-test'),
+            ariaLabel: target.getAttribute('aria-label'),
+            alt: target.getAttribute('alt'),
+            href: target.getAttribute('href'),
+            role: target.getAttribute('role'),
+            title: target.getAttribute('title')
           };
-
+          
+          cleanup();
           resolve(info);
-        };
+        }
 
-        document.addEventListener('mousemove', handleMouseMove);
-        document.addEventListener('click', handleClick, true);
+        document.addEventListener('mouseover', handleHover);
+        document.addEventListener('click', handleClick, { capture: true, once: true });
       })
     `) as any;
 
     // Generate Playwright selector from captured element info
     let selector: string;
+    let description: string;
 
-    if (pickedElement.id) {
-      selector = `locator('#${pickedElement.id}')`;
-    } else if (pickedElement.name) {
-      selector = `locator('[name="${pickedElement.name}"]')`;
-    } else if (pickedElement.type && pickedElement.tagName === 'input') {
-      selector = `locator('input[type="${pickedElement.type}"]')`;
-    } else if (pickedElement.tagName === 'button' && pickedElement.textContent) {
-      selector = `getByRole('button', { name: '${pickedElement.textContent}' })`;
-    } else if (pickedElement.tagName) {
-      selector = `locator('${pickedElement.tagName}')`;
+    const {
+      tagName, id, name, type, placeholder, textContent,
+      dataTestId, ariaLabel, alt, href, role, title
+    } = pickedElement;
+
+    // Helper to escape quotes
+    const escape = (str: string) => str.replace(/'/g, "\\'");
+
+    // 1. Data Test IDs (Highest Priority)
+    if (dataTestId) {
+      selector = `getByTestId('${escape(dataTestId)}')`;
+      description = `Element with test ID '${dataTestId}'`;
+    }
+    // 2. ID (if valid identifier)
+    else if (id && /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(id)) {
+      selector = `locator('#${id}')`;
+      description = `Element with ID '#${id}'`;
+    }
+    // 3. Role-based selectors (Accessibility friendly)
+    else if (tagName === 'button' || (role === 'button')) {
+      if (textContent) {
+        selector = `getByRole('button', { name: '${escape(textContent)}' })`;
+        description = `Button '${textContent}'`;
+      } else if (ariaLabel) {
+        selector = `getByRole('button', { name: '${escape(ariaLabel)}' })`;
+        description = `Button '${ariaLabel}'`;
+      } else {
+        selector = `getByRole('button')`;
+        description = 'Button';
+      }
+    }
+    else if (tagName === 'a' || role === 'link') {
+      if (textContent) {
+        selector = `getByRole('link', { name: '${escape(textContent)}' })`;
+        description = `Link '${textContent}'`;
+      } else if (ariaLabel) {
+        selector = `getByRole('link', { name: '${escape(ariaLabel)}' })`;
+        description = `Link '${ariaLabel}'`;
+      } else if (href) {
+        selector = `locator('a[href="${escape(href)}"]')`;
+        description = `Link to '${href}'`;
+      } else {
+        selector = `getByRole('link')`;
+        description = 'Link';
+      }
+    }
+    // 4. Input fields
+    else if (tagName === 'input') {
+      if (placeholder) {
+        selector = `getByPlaceholder('${escape(placeholder)}')`;
+        description = `Input with placeholder '${placeholder}'`;
+      } else if (ariaLabel) {
+        selector = `getByLabel('${escape(ariaLabel)}')`;
+        description = `Input '${ariaLabel}'`;
+      } else if (name) {
+        selector = `locator('input[name="${escape(name)}"]')`;
+        description = `Input '${name}'`;
+      } else if (type === 'submit') {
+        selector = `locator('input[type="submit"]')`;
+        description = 'Submit input';
+      } else {
+        selector = `locator('input')`;
+        description = 'Input field';
+      }
+    }
+    // 5. Images
+    else if (tagName === 'img' && alt) {
+      selector = `getByAltText('${escape(alt)}')`;
+      description = `Image '${alt}'`;
+    }
+    // 6. Text Content (as fallback for non-interactive elements)
+    else if (textContent && textContent.length < 30) {
+      selector = `getByText('${escape(textContent)}')`;
+      description = `Text '${textContent}'`;
+    }
+    // 7. Generic Fallbacks
+    else if (tagName) {
+      selector = `locator('${tagName}')`;
+      description = `<${tagName}> element`;
     } else {
       selector = `locator('body')`;
+      description = 'Body element';
     }
 
     this.pickedSelector = selector;
     this.log(`Element picked: ${selector}`);
 
-    return { selector };
+    return { selector, description };
   }
 
   /**

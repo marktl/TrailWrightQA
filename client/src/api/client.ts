@@ -343,7 +343,7 @@ export const api = {
       method: 'POST'
     }),
   pickElement: (sessionId: string) =>
-    fetchApi<{ success: boolean; selector: string }>(`/generate/${sessionId}/pick-element`, {
+    fetchApi<{ success: boolean; selector: string; description?: string }>(`/generate/${sessionId}/pick-element`, {
       method: 'POST'
     }),
   deleteGenerationStep: (sessionId: string, stepNumber: number) =>
