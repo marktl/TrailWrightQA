@@ -4,6 +4,25 @@ import { useGenerationStream } from '../hooks/useGenerationStream';
 export function GenerationViewer({ sessionId }: { sessionId: string }) {
   const { state, steps, isConnected, stopRecording } = useGenerationStream(sessionId);
 
+  const handleSave = async () => {
+    try {
+      const response = await fetch(`/api/generate/${sessionId}/save`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save test');
+      }
+
+      await response.json();
+      alert('Test saved successfully!');
+      window.location.href = '/tests';
+    } catch (error) {
+      console.error('Failed to save:', error);
+      alert('Failed to save test');
+    }
+  };
+
   if (!state) {
     return <div>Loading...</div>;
   }
@@ -74,7 +93,10 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
 
       {isRecordMode && !state.recordingActive && steps.length > 0 && (
         <div className="border-t p-4 bg-white">
-          <button className="w-full py-3 bg-green-600 text-white rounded-md hover:bg-green-700">
+          <button
+            onClick={handleSave}
+            className="w-full py-3 bg-green-600 text-white rounded-md hover:bg-green-700"
+          >
             Save Test
           </button>
         </div>

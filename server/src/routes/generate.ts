@@ -284,10 +284,7 @@ router.post('/:sessionId/record/stop', async (req, res) => {
       });
     }
 
-    generator.state.recordingActive = false;
-    generator.state.status = 'completed';
-
-    generator.emit('stateChange', generator.getState());
+    await generator.stop();
 
     res.json({
       state: generator.getState(),
@@ -841,6 +838,31 @@ router.post('/:sessionId/suggest-tags', async (req, res) => {
 router.post('/:sessionId/save', async (req, res) => {
   const { sessionId } = req.params;
   const { name, description, tags, prompt, successCriteria, folder, credentialId } = req.body || {};
+
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    try {
+      const testsDir = path.join(CONFIG.DATA_DIR, 'tests');
+      await fs.mkdir(testsDir, { recursive: true });
+
+      const testCode = await recordGenerator.generateTestFile();
+      const testPath = path.join(testsDir, `${sessionId}.spec.ts`);
+
+      await fs.writeFile(testPath, testCode, 'utf-8');
+
+      await recordGenerator.cleanup();
+      recordSessions.delete(sessionId);
+
+      return res.json({
+        success: true,
+        testId: sessionId,
+        testPath
+      });
+    } catch (error) {
+      console.error('Failed to save test:', error);
+      return res.status(500).json({ error: 'Failed to save test' });
+    }
+  }
 
   const generator = sessions.get(sessionId);
 

@@ -288,6 +288,44 @@ export class RecordModeGenerator extends EventEmitter {
     }
   }
 
+  async stop(): Promise<void> {
+    this.state.recordingActive = false;
+    this.state.status = 'completed';
+    this.state.updatedAt = new Date().toISOString();
+    this.emit('stateChange', this.getState());
+  }
+
+  async generateTestFile(): Promise<string> {
+    const imports = `import { test, expect } from '@playwright/test';`;
+
+    const metadata = {
+      id: this.sessionId,
+      name: this.config.name,
+      mode: 'record',
+      createdAt: new Date().toISOString()
+    };
+
+    const metadataComment = `/**
+ * // === TRAILWRIGHT_METADATA ===
+ * ${JSON.stringify(metadata, null, 2)}
+ */`;
+
+    const testSteps = this.recordedSteps
+      .map((step) => {
+        const comment = `  // Step ${step.stepNumber}: ${step.qaSummary}`;
+        const code = `  ${step.playwrightCode}`;
+        const wait = step.waitCode ? `  ${step.waitCode}` : '';
+        return [comment, code, wait].filter(Boolean).join('\n');
+      })
+      .join('\n\n');
+
+    const testBody = `test('${this.config.name}', async ({ page }) => {
+${testSteps}
+});`;
+
+    return `${metadataComment}\n${imports}\n\n${testBody}\n`;
+  }
+
   async cleanup(): Promise<void> {
     if (this.page && typeof (this.page as any).close === 'function') {
       await this.page.close();
