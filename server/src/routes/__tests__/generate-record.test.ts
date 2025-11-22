@@ -83,4 +83,23 @@ describe('Record Mode API', () => {
       recordedSteps: expect.any(Array),
     });
   });
+
+  it('GET /api/generate/:sessionId/events should stream recording steps', async () => {
+    const startResponse = await request(app)
+      .post('/api/generate/record/start')
+      .send({
+        name: 'Test Recording',
+        startUrl: 'https://example.com',
+      });
+
+    const sessionId = startResponse.body.sessionId;
+
+    const response = await request(app)
+      .get(`/api/generate/${sessionId}/events`)
+      .set('Accept', 'text/event-stream')
+      .set('x-test-close', 'true')
+      .expect(200);
+
+    expect(response.text).toContain('event: state');
+  });
 });

@@ -287,6 +287,8 @@ router.post('/:sessionId/record/stop', async (req, res) => {
     generator.state.recordingActive = false;
     generator.state.status = 'completed';
 
+    generator.emit('stateChange', generator.getState());
+
     res.json({
       state: generator.getState(),
       recordedSteps: generator.getSteps()
@@ -323,6 +325,41 @@ router.get('/:sessionId/state', (req, res) => {
  */
 router.get('/:sessionId/events', (req, res) => {
   const { sessionId } = req.params;
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    const closeAfterInitial = Boolean(req.headers['x-test-close']);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    res.write('event: state\n');
+    res.write(`data: ${JSON.stringify(recordGenerator.getState())}\n\n`);
+
+    if (closeAfterInitial) {
+      res.end();
+      return;
+    }
+
+    const stepHandler = (step: any) => {
+      res.write('event: step\n');
+      res.write(`data: ${JSON.stringify(step)}\n\n`);
+    };
+
+    const stateHandler = (state: any) => {
+      res.write('event: state\n');
+      res.write(`data: ${JSON.stringify(state)}\n\n`);
+    };
+
+    recordGenerator.on('step', stepHandler);
+    recordGenerator.on('stateChange', stateHandler);
+
+    req.on('close', () => {
+      recordGenerator.off('step', stepHandler);
+      recordGenerator.off('stateChange', stateHandler);
+    });
+    return;
+  }
+
   const generator = sessions.get(sessionId);
 
   if (!generator) {
