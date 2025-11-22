@@ -166,4 +166,37 @@ describe('RecordModeGenerator', () => {
     });
     expect(step.qaSummary).toContain('USA');
   });
+
+  it('should capture navigation events', async () => {
+    generator = new RecordModeGenerator({
+      sessionId: 'test-session-123',
+      name: 'Test Recording',
+      startUrl: 'https://example.com',
+      aiProvider: 'anthropic',
+    });
+
+    await generator.start(mockBrowser);
+
+    const navHandler = (mockPage.on as any).mock.calls.find(
+      ([event]) => event === 'framenavigated'
+    )?.[1];
+
+    const stepPromise = new Promise((resolve) => {
+      generator.on('step', resolve);
+    });
+
+    const mockFrame = {
+      url: () => 'https://example.com/dashboard',
+    };
+
+    // Simulate navigation (skip initial page load)
+    (generator as any).stepCounter = 1;
+    await navHandler?.(mockFrame, (mockPage as any).mainFrame?.());
+
+    const step = await stepPromise;
+    expect(step).toMatchObject({
+      interactionType: 'navigate',
+    });
+    expect(step.qaSummary).toContain('dashboard');
+  });
 });

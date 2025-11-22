@@ -20,6 +20,7 @@ export class RecordModeGenerator extends EventEmitter {
   private recordedSteps: RecordedStep[] = [];
   private stepCounter = 0;
   private activeInputs = new Map<string, { value: string; startTime: number; element: any }>();
+  private initialNavigationDone = false;
 
   constructor(config: RecordModeConfig) {
     super();
@@ -85,6 +86,11 @@ export class RecordModeGenerator extends EventEmitter {
     (this.page as any).on('change', async (event: any) => {
       await this.handleChangeEvent(event);
     });
+
+    // Navigation events
+    (this.page as any).on('framenavigated', async (frame: any) => {
+      await this.handleNavigationEvent(frame);
+    });
   }
 
   private async handleClickEvent(event: any): Promise<void> {
@@ -125,6 +131,41 @@ export class RecordModeGenerator extends EventEmitter {
       playwrightCode: `await page.${elementInfo.selector}.selectOption('${selectedValue}');`,
       timestamp: new Date().toISOString(),
       url: currentUrl
+    };
+
+    this.recordedSteps.push(step);
+    this.state.recordedSteps = [...this.recordedSteps];
+    this.state.steps = [...this.recordedSteps];
+    this.state.stepsTaken = this.recordedSteps.length;
+    this.state.updatedAt = new Date().toISOString();
+
+    this.emit('step', step);
+  }
+
+  private async handleNavigationEvent(frame: any): Promise<void> {
+    // Skip the initial navigation to startUrl
+    if (!this.initialNavigationDone) {
+      this.initialNavigationDone = true;
+      if (this.stepCounter === 0) {
+        return;
+      }
+    }
+
+    const mainFrame = typeof (this.page as any)?.mainFrame === 'function' ? this.page!.mainFrame() : undefined;
+    if (mainFrame && frame !== mainFrame) return;
+
+    const url = frame?.url ? frame.url() : '';
+
+    const step: RecordedStep = {
+      stepNumber: ++this.stepCounter,
+      interactionType: 'navigate',
+      elementInfo: {
+        selector: ''
+      },
+      qaSummary: `Navigate to ${url}`,
+      playwrightCode: `await page.goto('${url}');`,
+      timestamp: new Date().toISOString(),
+      url
     };
 
     this.recordedSteps.push(step);
