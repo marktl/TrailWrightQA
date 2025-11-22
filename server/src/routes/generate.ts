@@ -466,6 +466,26 @@ router.post('/:sessionId/reject-plan', (req, res) => {
   }
 });
 
+/**
+ * Activate visual element picker - user clicks element in browser to get selector
+ */
+router.post('/:sessionId/pick-element', async (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    const result = await generator.activateElementPicker();
+    res.json({ success: true, selector: result.selector });
+  } catch (error: any) {
+    console.error(`[generate] Element picker error for session ${sessionId}:`, error);
+    res.status(500).json({ error: error?.message || 'Failed to activate element picker' });
+  }
+});
+
 router.patch('/:sessionId/goal', (req, res) => {
   const { sessionId } = req.params;
   const { goal } = req.body;

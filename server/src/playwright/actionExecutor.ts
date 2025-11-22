@@ -2,6 +2,194 @@ import { Locator, Page } from 'playwright';
 import type { AIAction, RecordedStep } from '../../../shared/types.js';
 
 /**
+ * Check if text matches a pattern (supports both plain text and regex)
+ * Regex patterns should be in format: /pattern/ or /pattern/flags
+ */
+function matchesPattern(text: string | null, pattern: string): boolean {
+  if (!text) return false;
+
+  // Check if pattern looks like a regex: /.../ or /.../flags
+  const regexMatch = pattern.match(/^\/(.+?)\/([gimsuy]*)$/);
+  if (regexMatch) {
+    try {
+      const [, regexPattern, flags] = regexMatch;
+      const regex = new RegExp(regexPattern, flags);
+      return regex.test(text);
+    } catch {
+      // If regex parsing fails, fall back to plain text match
+      return text.includes(pattern);
+    }
+  }
+
+  // Plain text substring match
+  return text.includes(pattern);
+}
+
+/**
+ * Detect if a selector targets a split-field (like SSN or phone)
+ * Returns info about the split pattern if detected, null otherwise
+ */
+interface SplitFieldInfo {
+  baseName: string;    // e.g., "ssn" or "phone"
+  index: number;       // Current field index (1, 2, 3)
+  totalParts: number;  // Total number of parts
+  pattern: string;     // Pattern like "ssn{n}" or "phone{n}"
+  allSelectors: string[]; // All field selectors
+}
+
+function detectSplitField(selector: string, value: string): SplitFieldInfo | null {
+  // Extract id or name from selector
+  const idMatch = selector.match(/#([a-zA-Z0-9_-]+)/);
+  const nameMatch = selector.match(/\[name=["']([a-zA-Z0-9_-]+)["']\]/);
+
+  const fieldId = idMatch?.[1] || nameMatch?.[1];
+  if (!fieldId) return null;
+
+  // Common split-field patterns
+  const patterns = [
+    // SSN patterns: ssn1, ssn2, ssn3 or ssnConf1, ssnConf2, ssnConf3
+    { regex: /^(ssn(?:Conf)?)(\d)$/, parts: 3, lengths: [3, 2, 4] },
+    // Phone patterns: phone1, phone2, phone3 or phoneArea, phonePrefix, phoneLine
+    { regex: /^(phone)(\d)$/, parts: 3, lengths: [3, 3, 4] },
+    // Generic numbered patterns: field1, field2, field3
+    { regex: /^([a-zA-Z]+)(\d)$/, parts: null, lengths: null }
+  ];
+
+  for (const pattern of patterns) {
+    const match = fieldId.match(pattern.regex);
+    if (match) {
+      const baseName = match[1];
+      const currentIndex = parseInt(match[2]);
+
+      // Determine total parts based on value length or pattern
+      let totalParts = pattern.parts;
+      let splitLengths = pattern.lengths;
+
+      // For SSN pattern specifically
+      if (baseName.toLowerCase().includes('ssn')) {
+        totalParts = 3;
+        splitLengths = [3, 2, 4];
+      }
+
+      // Try to infer from value if pattern doesn't specify
+      if (!totalParts && value) {
+        const parts = value.split(/[-\s./]/);
+        if (parts.length > 1) {
+          totalParts = parts.length;
+          splitLengths = parts.map(p => p.length);
+        }
+      }
+
+      if (!totalParts) continue;
+
+      // Generate all field selectors
+      const allSelectors: string[] = [];
+      const selectorType = idMatch ? 'id' : 'name';
+
+      for (let i = 1; i <= totalParts; i++) {
+        const fieldName = `${baseName}${i}`;
+        allSelectors.push(
+          selectorType === 'id'
+            ? `#${fieldName}`
+            : `[name="${fieldName}"]`
+        );
+      }
+
+      return {
+        baseName,
+        index: currentIndex,
+        totalParts,
+        pattern: `${baseName}{n}`,
+        allSelectors
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Split a value based on common patterns (SSN, phone, etc.)
+ */
+function splitValue(value: string, totalParts: number, baseName: string): string[] {
+  // Remove common separators
+  const cleaned = value.replace(/[-\s./()]/g, '');
+
+  // SSN pattern: 3-2-4
+  if (baseName.toLowerCase().includes('ssn') && totalParts === 3) {
+    if (cleaned.length === 9) {
+      return [
+        cleaned.substring(0, 3),
+        cleaned.substring(3, 5),
+        cleaned.substring(5, 9)
+      ];
+    }
+  }
+
+  // Phone pattern: 3-3-4
+  if (baseName.toLowerCase().includes('phone') && totalParts === 3) {
+    if (cleaned.length === 10) {
+      return [
+        cleaned.substring(0, 3),
+        cleaned.substring(3, 6),
+        cleaned.substring(6, 10)
+      ];
+    }
+  }
+
+  // Try to split by existing separators
+  const parts = value.split(/[-\s./()]/);
+  if (parts.length === totalParts) {
+    return parts;
+  }
+
+  // Equal split as fallback
+  const partLength = Math.ceil(cleaned.length / totalParts);
+  const result: string[] = [];
+  for (let i = 0; i < totalParts; i++) {
+    const start = i * partLength;
+    const part = cleaned.substring(start, start + partLength);
+    if (part) result.push(part);
+  }
+
+  return result;
+}
+
+/**
+ * Add exact: true to a selector to avoid strict mode violations
+ * Works with getByRole, getByLabel, and similar selectors
+ */
+function addExactToSelector(selector: string): string {
+  // Handle getByLabel with positional argument
+  // Example: getByLabel('Email') -> getByLabel('Email', { exact: true })
+  // Example: getByLabel('Email', { }) -> getByLabel('Email', { exact: true })
+  const labelMatch = selector.match(/^getByLabel\((['"][^'"]+['"])(?:,\s*\{([^}]*)\})?\)/);
+  if (labelMatch) {
+    const [, labelText, existingOptions] = labelMatch;
+    if (!existingOptions) {
+      // No options object - add one
+      return `getByLabel(${labelText}, { exact: true })`;
+    } else if (!existingOptions.includes('exact:')) {
+      // Has options but no exact - add it
+      return `getByLabel(${labelText}, { ${existingOptions.trim()}, exact: true })`;
+    }
+    // Already has exact
+    return selector;
+  }
+
+  // Handle getByRole, getByPlaceholder, etc. with name option
+  // Example: getByRole('textbox', { name: 'Email*' }) -> getByRole('textbox', { name: 'Email*', exact: true })
+  const nameOptionMatch = selector.match(/^(getBy\w+\([^,]+,\s*\{[^}]*name:\s*['"][^'"]+['"])(\s*\})/);
+  if (nameOptionMatch) {
+    const [, before, after] = nameOptionMatch;
+    return `${before}, exact: true${after}`;
+  }
+
+  // Already has exact option or doesn't use name/label option
+  return selector;
+}
+
+/**
  * Execute an AI-decided action in Playwright
  * Returns the executed action and any error
  */
@@ -24,16 +212,64 @@ export async function executeAction(
         }
         const clickTarget = await resolveLocator(page, action.selector);
         action.selector = clickTarget.selectorForCode;
-        await clickTarget.locator.click();
+        try {
+          await clickTarget.locator.click();
+        } catch (error: any) {
+          // Handle strict mode violations by retrying with exact match
+          if (error.message?.includes('strict mode violation')) {
+            const exactSelector = addExactToSelector(action.selector);
+            const retryTarget = await resolveLocator(page, exactSelector);
+            action.selector = retryTarget.selectorForCode;
+            await retryTarget.locator.click();
+          } else {
+            throw error;
+          }
+        }
         break;
 
       case 'fill':
         if (!action.selector || action.value === undefined) {
           throw new Error('fill action requires selector and value');
         }
-        const fillTarget = await resolveLocator(page, action.selector);
-        action.selector = fillTarget.selectorForCode;
-        await fillTarget.locator.fill(action.value);
+
+        // Check if this is a split-field (like SSN or phone)
+        const splitInfo = detectSplitField(action.selector, action.value);
+
+        if (splitInfo && action.value.length > 3) {
+          // This is a split field - fill all parts
+          const parts = splitValue(action.value, splitInfo.totalParts, splitInfo.baseName);
+
+          // Fill each part
+          for (let i = 0; i < Math.min(parts.length, splitInfo.allSelectors.length); i++) {
+            const partSelector = splitInfo.allSelectors[i];
+            const partValue = parts[i];
+
+            if (partValue) {
+              const locator = page.locator(partSelector);
+              await locator.fill(partValue);
+            }
+          }
+
+          // Keep original selector so generatePlaywrightCode can detect split pattern
+          // (no need to update action.selector)
+        } else {
+          // Normal single-field fill
+          const fillTarget = await resolveLocator(page, action.selector);
+          action.selector = fillTarget.selectorForCode;
+          try {
+            await fillTarget.locator.fill(action.value);
+          } catch (error: any) {
+            // Handle strict mode violations by retrying with exact match
+            if (error.message?.includes('strict mode violation')) {
+              const exactSelector = addExactToSelector(action.selector);
+              const retryTarget = await resolveLocator(page, exactSelector);
+              action.selector = retryTarget.selectorForCode;
+              await retryTarget.locator.fill(action.value);
+            } else {
+              throw error;
+            }
+          }
+        }
         break;
 
       case 'select':
@@ -88,7 +324,10 @@ export async function executeAction(
         const textTarget = await resolveLocator(page, action.selector);
         action.selector = textTarget.selectorForCode;
         const actualText = await textTarget.locator.textContent();
-        if (!actualText || !actualText.includes(action.value)) {
+
+        // Support both plain text and regex patterns
+        const isMatch = matchesPattern(actualText, action.value);
+        if (!isMatch) {
           throw new Error(`Expected text "${action.value}" not found. Found: "${actualText}"`);
         }
         break;
@@ -110,7 +349,8 @@ export async function executeAction(
           throw new Error('expectUrl action requires a URL pattern in value field');
         }
         const currentUrl = page.url();
-        if (!currentUrl.includes(action.value)) {
+        const urlMatch = matchesPattern(currentUrl, action.value);
+        if (!urlMatch) {
           throw new Error(`Expected URL to contain "${action.value}" but got "${currentUrl}"`);
         }
         break;
@@ -120,7 +360,8 @@ export async function executeAction(
           throw new Error('expectTitle action requires expected title in value field');
         }
         const actualTitle = await page.title();
-        if (!actualTitle.includes(action.value)) {
+        const titleMatch = matchesPattern(actualTitle, action.value);
+        if (!titleMatch) {
           throw new Error(`Expected title to contain "${action.value}" but got "${actualTitle}"`);
         }
         break;
@@ -173,12 +414,21 @@ async function resolveLocator(
     }
   }
 
+  // Replace standalone locator() calls with page.locator() for chained selectors
+  const normalizedSelector = cleaned.replace(/\blocator\(/g, 'page.locator(');
+
   try {
-    const locator: Locator = eval(`page.${cleaned}`);
-    return { locator, selectorForCode: cleaned };
-  } catch {
-    const locator = page.locator(selectorStr);
-    return { locator, selectorForCode: cleaned };
+    const locator: Locator = eval(`page.${normalizedSelector}`);
+    return { locator, selectorForCode: normalizedSelector };
+  } catch (error) {
+    // If eval fails, treat the whole thing as a simple CSS/text selector
+    try {
+      const locator = page.locator(selectorStr);
+      return { locator, selectorForCode: `locator('${selectorStr}')` };
+    } catch {
+      // Last resort - throw descriptive error
+      throw new Error(`Invalid selector: ${selectorStr}. Error: ${error}`);
+    }
   }
 }
 
@@ -261,8 +511,25 @@ export function generatePlaywrightCode(action: AIAction): string {
     case 'click':
       return `await page.${action.selector}.click();`;
 
-    case 'fill':
+    case 'fill': {
+      // Check if this is a split-field fill (selector contains multiple locators)
+      const splitInfo = action.selector && detectSplitField(action.selector, action.value || '');
+
+      if (splitInfo && action.value && action.value.length > 3) {
+        // Generate code for split-field
+        const parts = splitValue(action.value, splitInfo.totalParts, splitInfo.baseName);
+        const lines = splitInfo.allSelectors
+          .map((sel, i) => {
+            const val = parts[i] || '';
+            return `await page.locator('${sel}').fill('${escapeString(val)}');`;
+          })
+          .join('\n');
+        return lines;
+      }
+
+      // Normal single-field fill
       return `await page.${action.selector}.fill('${escapeString(action.value || '')}');`;
+    }
 
     case 'select':
       return `await page.${action.selector}.selectOption('${escapeString(action.value || '')}');`;
@@ -281,17 +548,23 @@ export function generatePlaywrightCode(action: AIAction): string {
     case 'expectVisible':
       return `await expect(page.${action.selector}).toBeVisible();`;
 
-    case 'expectText':
-      return `await expect(page.${action.selector}).toContainText('${escapeString(action.value || '')}');`;
+    case 'expectText': {
+      const textPattern = formatPatternForCode(action.value || '');
+      return `await expect(page.${action.selector}).toContainText(${textPattern});`;
+    }
 
     case 'expectValue':
       return `await expect(page.${action.selector}).toHaveValue('${escapeString(action.value || '')}');`;
 
-    case 'expectUrl':
-      return `await expect(page).toHaveURL(/${escapeRegex(action.value || '')}/);`;
+    case 'expectUrl': {
+      const urlPattern = formatPatternForCode(action.value || '');
+      return `await expect(page).toHaveURL(${urlPattern});`;
+    }
 
-    case 'expectTitle':
-      return `await expect(page).toHaveTitle(/${escapeRegex(action.value || '')}/);`;
+    case 'expectTitle': {
+      const titlePattern = formatPatternForCode(action.value || '');
+      return `await expect(page).toHaveTitle(${titlePattern});`;
+    }
 
     case 'screenshot':
       const screenshotName = action.value || 'screenshot';
@@ -326,6 +599,18 @@ export function generateQASummary(action: AIAction): string {
     }
 
     case 'fill': {
+      // Check if this is a split-field
+      const splitInfo = action.selector && detectSplitField(action.selector, action.value || '');
+
+      if (splitInfo && action.value && action.value.length > 3) {
+        // Generate QA summary for split field
+        const fieldType = splitInfo.baseName.toLowerCase().includes('ssn') ? 'SSN' :
+                         splitInfo.baseName.toLowerCase().includes('phone') ? 'Phone' :
+                         splitInfo.baseName;
+        return `Fill ${fieldType} fields with "${action.value}"`;
+      }
+
+      // Normal single field
       const fieldName = extractElementName(action.selector || '');
       const value = action.value || '';
       return fieldName
@@ -442,6 +727,23 @@ function extractElementName(selector: string): string | null {
 }
 
 /**
+ * Format a pattern for code generation - supports both plain text and regex
+ * Regex patterns (e.g., "/^Thompson/") are returned as regex literals
+ * Plain text is returned as quoted strings
+ */
+function formatPatternForCode(pattern: string): string {
+  // Check if pattern looks like a regex: /.../ or /.../flags
+  const regexMatch = pattern.match(/^\/(.+?)\/([gimsuy]*)$/);
+  if (regexMatch) {
+    // Return as regex literal (no quotes)
+    return pattern;
+  }
+
+  // Return as quoted string
+  return `'${escapeString(pattern)}'`;
+}
+
+/**
  * Escape string for code generation
  */
 function escapeString(str: string): string {
@@ -449,7 +751,7 @@ function escapeString(str: string): string {
 }
 
 /**
- * Escape string for regex patterns
+ * Escape string for regex patterns (deprecated - use formatPatternForCode instead)
  */
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

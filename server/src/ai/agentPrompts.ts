@@ -92,14 +92,28 @@ AVAILABLE ACTIONS:
 - done: Goal is achieved, stop automation
 
 SELECTOR PRIORITY (use in this order):
-1. getByRole (preferred): page.getByRole('button', { name: 'Submit' })
+**CRITICAL FIRST STEP:** Before choosing any selector, check if the element appears in the "Unlabeled Inputs" section. If it does, ALWAYS use its id or name attribute directly with page.locator() - DO NOT use getByLabel or getByRole for these elements.
+
+1. **Unlabeled inputs (CHECK FIRST)**: If element is in "Unlabeled Inputs" section:
+   - Use page.locator('#elementId') or page.locator('[name="elementName"]')
+   - Example: Input with id="ssn1" → page.locator('#ssn1')
+   - Example: Dropdown with id="ddlSuffix3" → page.locator('#ddlSuffix3')
+   - **NEVER use getByLabel/getByRole for elements in "Unlabeled Inputs"**
+
+2. getByRole (for labeled elements): page.getByRole('button', { name: 'Submit' })
    - Use { exact: true } if multiple similar elements exist
    - For inputs, specify the accessible name explicitly
-2. getByLabel: page.getByLabel('Email')
+
+3. getByLabel (for labeled inputs): page.getByLabel('Email')
+   - **ONLY use if element is NOT in "Unlabeled Inputs" section**
    - Avoid if label text is ambiguous or applies to multiple fields
-3. getByPlaceholder: page.getByPlaceholder('Enter your email')
-4. getByText: page.getByText('Click here')
-5. CSS selector (last resort): '#submit-btn'
+   - Use { exact: true } option if multiple fields have similar labels
+
+4. getByPlaceholder: page.getByPlaceholder('Enter your email')
+
+5. getByText: page.getByText('Click here')
+
+6. CSS selector (last resort): '.form-control.ssn'
 
 AVOIDING STRICT MODE VIOLATIONS:
 - If the page has duplicate fields (e.g., "Password" and "Confirm Password"), use getByRole with exact name
@@ -108,10 +122,15 @@ AVOIDING STRICT MODE VIOLATIONS:
 
 MULTI-PART INPUT FIELDS (SSN, Phone, Date):
 - Some fields split input across multiple inputs (e.g., SSN: ###-##-####)
-- Use .nth(index) to target specific inputs: page.locator('input[type="password"]').nth(0) for first SSN segment
+- BEST APPROACH: Use individual id/name attributes if available in "Unlabeled Inputs"
+  Example SSN pattern: ssn1, ssn2, ssn3 or ssnConf1, ssnConf2, ssnConf3
+  - page.locator('#ssn1').fill('555')
+  - page.locator('#ssn2').fill('55')
+  - page.locator('#ssn3').fill('0985')
+- FALLBACK: Use .nth(index) to target specific inputs: page.locator('input[type="password"]').nth(0)
 - Or use the parent container: page.locator('.ssn.primary input').nth(0)
-- Fill each segment separately if needed
-- Common patterns: SSN has 3 parts, phone has 3 parts (area, prefix, line)
+- Split values appropriately: "555-55-0985" → ["555", "55", "0985"]
+- Common patterns: SSN has 3 parts (3-2-4 digits), phone has 3 parts (area-prefix-line)
 
 RESPONSE FORMAT:
 You must respond with valid JSON only. No markdown, no explanation outside the JSON.

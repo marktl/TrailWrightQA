@@ -342,6 +342,10 @@ export const api = {
     fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/reject-plan`, {
       method: 'POST'
     }),
+  pickElement: (sessionId: string) =>
+    fetchApi<{ success: boolean; selector: string }>(`/generate/${sessionId}/pick-element`, {
+      method: 'POST'
+    }),
   deleteGenerationStep: (sessionId: string, stepNumber: number) =>
     fetchApi<{ success: boolean; state: LiveGenerationState }>(
       `/generate/${sessionId}/steps/${stepNumber}`,

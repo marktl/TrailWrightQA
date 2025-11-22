@@ -2,6 +2,7 @@ import { chromium, Browser, Page } from 'playwright';
 import { EventEmitter } from 'events';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import type {
   LiveGenerationOptions,
   LiveGenerationState,
@@ -77,6 +78,7 @@ export class LiveTestGenerator extends EventEmitter {
   private variables: Map<string, { name: string; type: string; sampleValue?: string }> = new Map();
   private originalManualInstruction?: string; // Stores instruction with {{placeholders}}
   private pendingPlan?: StepPlan; // For manual mode: plan awaiting user approval
+  private pickedSelector?: string; // Stores selector from visual element picker
 
   constructor(
     options: LiveGenerationOptions,
@@ -143,11 +145,11 @@ export class LiveTestGenerator extends EventEmitter {
       credentialId: this.credential?.id,
       credentialSummary: this.credential
         ? {
-            id: this.credential.id,
-            name: this.credential.name,
-            username: this.credential.username,
-            notes: this.credential.notes
-          }
+          id: this.credential.id,
+          name: this.credential.name,
+          username: this.credential.username,
+          notes: this.credential.notes
+        }
         : undefined,
       mode: this.mode,
       pendingPlan: this.pendingPlan
@@ -240,9 +242,10 @@ export class LiveTestGenerator extends EventEmitter {
         }
 
         const step = this.nextStepNumber;
-        const maxRetries = 2;
+        const maxRetries = 1; // 2 total attempts: original + 1 retry with screenshot
         let retryCount = 0;
         let lastError: string | undefined;
+        let failureScreenshot: string | undefined;
         let actionSucceeded = false;
 
         while (retryCount <= maxRetries && !actionSucceeded) {
@@ -256,11 +259,12 @@ export class LiveTestGenerator extends EventEmitter {
             payload: { url: pageState.url, title: pageState.title }
           });
 
-          // Ask AI for next action
+          // Ask AI for next action (with screenshot if previous attempt failed)
           this.updateStatus('thinking');
           const action = await this.decideNextAction(
             pageState.hasChanged ? formatPageStateForAI(pageState) : '(page unchanged)',
-            lastError
+            lastError,
+            failureScreenshot
           );
 
           if (this.isPaused) {
@@ -301,25 +305,25 @@ export class LiveTestGenerator extends EventEmitter {
             lastError = result.error;
             retryCount++;
 
-            // Capture screenshot of failure for debugging
-            const failureScreenshot = await this.captureFailureScreenshot(step, retryCount);
+            // Capture screenshot of failure for AI to analyze
+            failureScreenshot = await this.captureFailureScreenshot(step, retryCount);
 
             if (retryCount <= maxRetries) {
               this.log(`⚠️ Action failed (attempt ${retryCount}/${maxRetries + 1}): ${result.error}`);
-              this.log(`Asking AI to try a different approach...`);
-              // Loop continues with lastError and screenshot passed to AI
+              this.log(`📸 Asking AI to try a different approach (screenshot provided)...`);
+              // Loop continues with lastError and failureScreenshot passed to AI
               continue;
             } else if (manualInstruction) {
               await this.handleManualInstructionFailure(
                 manualInstruction,
                 action,
-                result.error,
+                result.error || 'Action failed',
                 failureScreenshot
               );
               return;
             } else {
               // All retries exhausted - pause and ask user for help
-              await this.handleRetriesExhausted(action, result.error, failureScreenshot);
+              await this.handleRetriesExhausted(action, result.error || 'Action failed', failureScreenshot);
               return;
             }
           }
@@ -376,7 +380,7 @@ export class LiveTestGenerator extends EventEmitter {
       await this.finalize();
     } catch (error: any) {
       if (manualInstruction) {
-              await this.handleManualUnexpectedError(manualInstruction, error);
+        await this.handleManualUnexpectedError(manualInstruction, error);
       } else {
         this.handleError(error);
       }
@@ -393,13 +397,13 @@ export class LiveTestGenerator extends EventEmitter {
   /**
    * Call AI to decide next action
    */
-  private async decideNextAction(pageState: string, previousError?: string): Promise<AIAction> {
-    const prompt = this.buildContextualPrompt(pageState, previousError);
+  private async decideNextAction(pageState: string, previousError?: string, screenshot?: string): Promise<AIAction> {
+    const prompt = this.buildContextualPrompt(pageState, previousError, screenshot);
 
     this.emit('event', {
       type: 'ai_thinking',
       timestamp: new Date().toISOString(),
-      payload: { prompt }
+      payload: { prompt, hasScreenshot: !!screenshot }
     });
 
     let responseText: string;
@@ -407,13 +411,13 @@ export class LiveTestGenerator extends EventEmitter {
     try {
       switch (this.provider) {
         case 'anthropic':
-          responseText = await this.callAnthropic(prompt);
+          responseText = await this.callAnthropic(prompt, screenshot);
           break;
         case 'openai':
-          responseText = await this.callOpenAI(prompt);
+          responseText = await this.callOpenAI(prompt, screenshot);
           break;
         case 'gemini':
-          responseText = await this.callGemini(prompt);
+          responseText = await this.callGemini(prompt, screenshot);
           break;
         default:
           throw new Error(`Unsupported provider: ${this.provider}`);
@@ -434,7 +438,7 @@ export class LiveTestGenerator extends EventEmitter {
     }
   }
 
-  private buildContextualPrompt(pageState: string, previousError?: string): string {
+  private buildContextualPrompt(pageState: string, previousError?: string, screenshot?: string): string {
     const manualInstruction = this.activeManualInstruction?.trim();
     const effectiveGoal = manualInstruction
       ? `Step-by-step instruction: ${manualInstruction}\n\nOriginal session goal: ${this.options.goal}`
@@ -449,11 +453,9 @@ export class LiveTestGenerator extends EventEmitter {
     );
 
     if (this.credential) {
-      prompt += `\n\nCREDENTIALS AVAILABLE:\n- Name: ${this.credential.name}\n- Username: ${
-        this.credential.username
-      }\n- Password: ${this.credential.password}\n${
-        this.credential.notes ? `- Notes: ${this.credential.notes}` : ''
-      }\nUse these when authentication is required.`;
+      prompt += `\n\nCREDENTIALS AVAILABLE:\n- Name: ${this.credential.name}\n- Username: ${this.credential.username
+        }\n- Password: ${this.credential.password}\n${this.credential.notes ? `- Notes: ${this.credential.notes}` : ''
+        }\nUse these when authentication is required.`;
     }
 
     if (this.recordedSteps.length > 0) {
@@ -468,7 +470,8 @@ export class LiveTestGenerator extends EventEmitter {
       prompt += `\n\nSTEP-BY-STEP COLLABORATION CONTEXT:\n- Follow this instruction precisely: ${manualInstruction}\n- Continue taking actions until this instruction is fully satisfied (it may require multiple steps)\n- When you believe the instruction is complete, respond with {"action":"done"} and briefly explain what was achieved\n- Do not pursue other goals until the user provides another instruction`;
 
       if (previousError) {
-        prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}\nReview the error and adjust your next attempt while still pursuing the user's step-by-step instruction.`;
+        prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}${screenshot ? '\n📸 A screenshot of the page at the time of failure is provided. Use it to visually identify elements and their exact labels/text.' : ''
+          }\nReview the error and adjust your next attempt while still pursuing the user's step-by-step instruction.`;
       }
 
       return prompt;
@@ -482,19 +485,30 @@ export class LiveTestGenerator extends EventEmitter {
       prompt += `\n\n🚨 CRITICAL USER INSTRUCTIONS - FOLLOW IMMEDIATELY:\n${corrections}\n\n>>> YOUR VERY NEXT ACTION MUST ADDRESS THE USER INSTRUCTION ABOVE <<<\n>>> DO NOT attempt any other actions until the user instruction is completed <<<\n>>> If the instruction says "click register", your next action MUST be clicking register <<<\n>>> User instructions override any previous errors - try the action the user requested <<<\n\nAfter completing the user instruction, CONTINUE pursuing the original goal: "${this.options.goal}"`;
     } else if (previousError) {
       // Only show error context if there are no user corrections
-      prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}\n\nThe selector or approach you just tried didn't work. Analyze the error carefully and try a DIFFERENT approach:\n- If "strict mode violation", the selector matched multiple elements - use more specific selectors with exact: true\n- If "timeout", the element may not exist or have a different accessible name\n- Review the error details and adjust your selector accordingly\n- DO NOT repeat the same selector that just failed`;
+      prompt += `\n\n🚨 PREVIOUS ACTION FAILED:\nError: ${previousError}${screenshot ? '\n📸 A screenshot of the page at the time of failure is provided. Use it to visually identify elements, their exact labels/text, and understand the page layout.' : ''
+        }\n\nThe selector or approach you just tried didn't work. Analyze the error carefully and try a DIFFERENT approach:\n- If "strict mode violation", the selector matched multiple elements - use more specific selectors with exact: true\n- If "timeout", the element may not exist or have a different accessible name\n- Review the error details and adjust your selector accordingly\n- DO NOT repeat the same selector that just failed${screenshot ? '\n- Use the screenshot to verify element labels and choose the correct selector' : ''
+        }`;
     }
 
     return prompt;
   }
 
-  private async callAnthropic(prompt: string): Promise<string> {
+  private async callAnthropic(prompt: string, screenshot?: string): Promise<string> {
     const client = new Anthropic({ apiKey: this.apiKey });
+
+    // Build message content with optional screenshot
+    const messageContent: Anthropic.MessageParam['content'] = screenshot
+      ? [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshot } },
+        { type: 'text', text: prompt }
+      ]
+      : prompt;
+
     const message = await client.messages.create({
       model: 'claude-3-5-sonnet-20241022',
       max_tokens: 1000,
       system: AGENT_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: prompt }]
+      messages: [{ role: 'user', content: messageContent }]
     });
 
     const content = message.content[0];
@@ -505,14 +519,29 @@ export class LiveTestGenerator extends EventEmitter {
     return content.text;
   }
 
-  private async callOpenAI(prompt: string): Promise<string> {
-    const client = new OpenAI({ apiKey: this.apiKey });
-    const completion = await client.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
+  private async callOpenAI(prompt: string, screenshot?: string): Promise<string> {
+    const client = new OpenAI({ apiKey: this.apiKey, baseURL: this.baseUrl });
+
+    // Build messages with optional screenshot
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = screenshot
+      ? [
+        { role: 'system', content: AGENT_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot}` } },
+            { type: 'text', text: prompt }
+          ]
+        }
+      ]
+      : [
         { role: 'system', content: AGENT_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
-      ],
+      ];
+
+    const completion = await client.chat.completions.create({
+      model: 'gpt-4o',
+      messages,
       max_tokens: 1000,
       response_format: { type: 'json_object' }
     });
@@ -525,11 +554,20 @@ export class LiveTestGenerator extends EventEmitter {
     return content;
   }
 
-  private async callGemini(prompt: string): Promise<string> {
+  private async callGemini(prompt: string, screenshot?: string): Promise<string> {
     const genAI = new GoogleGenAI({ apiKey: this.apiKey });
+
+    // Build content parts with optional screenshot
+    const parts = screenshot
+      ? [
+        { inline_data: { mime_type: 'image/png', data: screenshot } },
+        { text: prompt }
+      ]
+      : prompt;
+
     const result = await genAI.models.generateContent({
       model: 'gemini-2.5-pro',
-      contents: prompt,
+      contents: parts,
       config: {
         systemInstruction: AGENT_SYSTEM_PROMPT,
         responseMimeType: 'application/json'
@@ -963,6 +1001,142 @@ export class LiveTestGenerator extends EventEmitter {
   }
 
   /**
+   * Activate visual element picker - injects UI overlay on page for user to click target element
+   */
+  async activateElementPicker(): Promise<{ selector: string }> {
+    if (!this.page) {
+      throw new Error('Browser not initialized');
+    }
+
+    this.log('Element picker activated - click an element in the browser');
+    this.pickedSelector = undefined;
+
+    // Inject element picker script into the page
+    const pickedElement = await this.page.evaluate(`
+      new Promise((resolve) => {
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'trailwright-element-picker-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.3); z-index: 999999; pointer-events: none;';
+
+        // Create global cursor style
+        const style = document.createElement('style');
+        style.id = 'trailwright-element-picker-style';
+        style.textContent = '* { cursor: crosshair !important; }';
+        document.head.appendChild(style);
+
+        // Create instruction banner
+        const banner = document.createElement('div');
+        banner.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #3b82f6; color: white; padding: 16px 24px; border-radius: 8px; font-family: system-ui, -apple-system, sans-serif; font-size: 16px; font-weight: 500; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); z-index: 1000000; pointer-events: none;';
+        banner.textContent = '🎯 Click the element you want to target';
+
+        document.body.appendChild(overlay);
+        document.body.appendChild(banner);
+
+        let highlightedElement = null;
+        let highlightBorder = null;
+
+        // Highlight element on hover
+        const handleMouseMove = (e) => {
+          const target = e.target;
+          if (target === overlay || target === banner || target === highlightBorder) {
+            return;
+          }
+
+          if (highlightedElement !== target) {
+            // Remove previous highlight
+            if (highlightBorder) {
+              highlightBorder.remove();
+            }
+
+            highlightedElement = target;
+
+            // Create highlight border
+            const rect = target.getBoundingClientRect();
+            highlightBorder = document.createElement('div');
+            highlightBorder.style.cssText = 'position: fixed; top: ' + rect.top + 'px; left: ' + rect.left + 'px; width: ' + rect.width + 'px; height: ' + rect.height + 'px; border: 3px solid #fbbf24; background: rgba(251, 191, 36, 0.1); pointer-events: none; z-index: 999998; box-sizing: border-box;';
+            document.body.appendChild(highlightBorder);
+          }
+        };
+
+        // Capture element on click
+        const handleClick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          const target = e.target;
+          if (target === overlay || target === banner || target === highlightBorder) {
+            return;
+          }
+
+          // Cleanup
+          overlay.remove();
+          banner.remove();
+          if (highlightBorder) {
+            highlightBorder.remove();
+          }
+          const style = document.getElementById('trailwright-element-picker-style');
+          if (style) style.remove();
+          
+          document.removeEventListener('mousemove', handleMouseMove);
+          document.removeEventListener('click', handleClick, true);
+
+          // Capture element info
+          const info = {
+            id: target.id || undefined,
+            name: target.getAttribute ? target.getAttribute('name') : undefined,
+            tagName: target.tagName.toLowerCase(),
+            className: target.className || undefined,
+            textContent: target.textContent ? target.textContent.trim().substring(0, 50) : undefined,
+            type: target.getAttribute ? target.getAttribute('type') : undefined
+          };
+
+          resolve(info);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('click', handleClick, true);
+      })
+    `) as any;
+
+    // Generate Playwright selector from captured element info
+    let selector: string;
+
+    if (pickedElement.id) {
+      selector = `locator('#${pickedElement.id}')`;
+    } else if (pickedElement.name) {
+      selector = `locator('[name="${pickedElement.name}"]')`;
+    } else if (pickedElement.type && pickedElement.tagName === 'input') {
+      selector = `locator('input[type="${pickedElement.type}"]')`;
+    } else if (pickedElement.tagName === 'button' && pickedElement.textContent) {
+      selector = `getByRole('button', { name: '${pickedElement.textContent}' })`;
+    } else if (pickedElement.tagName) {
+      selector = `locator('${pickedElement.tagName}')`;
+    } else {
+      selector = `locator('body')`;
+    }
+
+    this.pickedSelector = selector;
+    this.log(`Element picked: ${selector}`);
+
+    return { selector };
+  }
+
+  /**
+   * Get the currently picked selector (if any)
+   */
+  getPickedSelector(): string | undefined {
+    return this.pickedSelector;
+  }
+
+  /**
+   * Clear the picked selector
+   */
+  clearPickedSelector(): void {
+    this.pickedSelector = undefined;
+  }
+
+  /**
    * Create a step plan from user instruction (planning phase for manual mode)
    */
   async createStepPlan(instruction: string): Promise<StepPlan> {
@@ -985,7 +1159,7 @@ export class LiveTestGenerator extends EventEmitter {
       const missing = validation.missing.join(', ');
       throw new Error(
         `Cannot create plan: missing sample values for variables: ${missing}. ` +
-          `Please set sample values for these variables before using them.`
+        `Please set sample values for these variables before using them.`
       );
     }
 
@@ -1127,41 +1301,89 @@ export class LiveTestGenerator extends EventEmitter {
 
     this.updateStatus('running');
 
-    // Execute each planned step
+    // Execute each planned step with retry logic
     for (let i = 0; i < plan.steps.length; i++) {
       const plannedStep = plan.steps[i];
       const stepNumber = this.nextStepNumber;
 
       this.log(`Executing step ${i + 1}/${plan.steps.length}: ${plannedStep.description}`);
 
-      // Convert planned step to AIAction
-      const action: AIAction = {
-        action: plannedStep.action,
-        selector: plannedStep.selector,
-        value: plannedStep.value,
-        reasoning: plannedStep.description
-      };
+      // Retry logic: 2 total attempts (original + 1 retry with screenshot)
+      const maxRetries = 1;
+      let retryCount = 0;
+      let lastError: string | undefined;
+      let failureScreenshot: string | undefined;
+      let result: { success: boolean; error?: string } | undefined;
+      let action: AIAction | undefined;
 
-      // Execute the action
-      const result = await executeAction(this.page, action);
+      while (retryCount <= maxRetries) {
+        // On retry, ask AI to re-decide with screenshot
+        if (retryCount > 0 && lastError) {
+          this.log(`🔄 Retry ${retryCount}/${maxRetries}: Re-planning with screenshot...`);
 
-      // Capture screenshot regardless of success/failure for debugging
-      await this.page.waitForTimeout(500);
-      const screenshot = await this.captureStepScreenshot(stepNumber);
+          // Capture page state for AI to re-decide
+          const pageState = await capturePageState(this.page);
+          const formattedState = formatPageStateForAI(pageState);
 
-      if (!result.success) {
-        // Step failed - don't record it, only notify user
-        this.log(`❌ Step failed: ${result.error}`);
-        // Add chat message about failure
-        this.addChatMessage('assistant', `Step "${plannedStep.description}" failed: ${result.error}\n\nPlease provide a new instruction or adjust your approach.`, true);
+          // Build prompt for re-decision
+          const retryPrompt = `The previous attempt to "${plannedStep.description}" failed with error:\n${lastError}\n\n${failureScreenshot ? '📸 A screenshot is provided showing the current page state.\n\n' : ''
+            }Current page state:\n${formattedState}\n\nProvide a DIFFERENT approach to accomplish: "${plannedStep.description}"`;
+
+          try {
+            // Get new decision from AI with screenshot
+            action = await this.decideNextAction(formattedState, lastError, failureScreenshot);
+          } catch (error: any) {
+            this.log(`⚠️ Failed to get retry decision from AI: ${error.message}`);
+            break;
+          }
+        } else {
+          // First attempt: use original planned action
+          action = {
+            action: plannedStep.action,
+            selector: plannedStep.selector,
+            value: plannedStep.value,
+            reasoning: plannedStep.description
+          };
+        }
+
+        // Execute the action
+        result = await executeAction(this.page, action);
+
+        if (result.success) {
+          // Success! Break out of retry loop
+          break;
+        } else {
+          // Failed - capture screenshot and increment retry
+          lastError = result.error;
+          retryCount++;
+
+          if (retryCount <= maxRetries) {
+            // Capture failure screenshot for AI
+            failureScreenshot = await this.captureFailureScreenshot(stepNumber, retryCount);
+            this.log(`⚠️ Attempt ${retryCount}/${maxRetries + 1} failed: ${result.error}`);
+          }
+        }
+      }
+
+      // After all retries, check final result
+      if (!result || !result.success) {
+        // All attempts failed - notify user
+        this.log(`❌ Step failed after ${maxRetries + 1} attempts: ${lastError}`);
+        this.addChatMessage(
+          'assistant',
+          `Step "${plannedStep.description}" failed after ${maxRetries + 1} attempts:\n${lastError}\n\nPlease provide a new instruction or adjust your approach.`,
+          true
+        );
         this.enterManualAwaitingState();
         this.touch();
         return;
       }
 
       // Step succeeded - record it
+      await this.page.waitForTimeout(500);
+      const screenshot = await this.captureStepScreenshot(stepNumber);
 
-      const recorded = createRecordedStep(stepNumber, action, {
+      const recorded = createRecordedStep(stepNumber, action!, {
         url: this.currentUrl,
         screenshotPath: screenshot?.path,
         screenshotData: screenshot?.data
@@ -1373,10 +1595,10 @@ export class LiveTestGenerator extends EventEmitter {
       options?.variables ||
       (this.variables.size > 0
         ? Array.from(this.variables.values()).map((v) => ({
-            name: v.name,
-            type: v.type as 'string' | 'number',
-            sampleValue: v.sampleValue
-          }))
+          name: v.name,
+          type: v.type as 'string' | 'number',
+          sampleValue: v.sampleValue
+        }))
         : undefined);
 
     return generator.generateTestFile({
@@ -1506,7 +1728,7 @@ export class LiveTestGenerator extends EventEmitter {
 
   private addChatMessage(role: ChatMessage['role'], message: string, isError: boolean = false): ChatMessage {
     const chatMessage: ChatMessage = {
-      id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `chat-${Date.now()}-${crypto.randomUUID()}`,
       role,
       message,
       timestamp: new Date().toISOString(),
@@ -1689,9 +1911,9 @@ Keep it non-technical and actionable. Do not use markdown.`;
           const client = new Anthropic({ apiKey: this.apiKey });
           const content: Anthropic.MessageParam['content'] = screenshot
             ? [
-                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshot } },
-                { type: 'text', text: textPrompt }
-              ]
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshot } },
+              { type: 'text', text: textPrompt }
+            ]
             : textPrompt;
 
           const message = await client.messages.create({
@@ -1709,14 +1931,14 @@ Keep it non-technical and actionable. Do not use markdown.`;
           const client = new OpenAI({ apiKey: this.apiKey });
           const messages: OpenAI.Chat.ChatCompletionMessageParam[] = screenshot
             ? [
-                {
-                  role: 'user',
-                  content: [
-                    { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot}` } },
-                    { type: 'text', text: textPrompt }
-                  ]
-                }
-              ]
+              {
+                role: 'user',
+                content: [
+                  { type: 'image_url', image_url: { url: `data:image/png;base64,${screenshot}` } },
+                  { type: 'text', text: textPrompt }
+                ]
+              }
+            ]
             : [{ role: 'user', content: textPrompt }];
 
           const completion = await client.chat.completions.create({
@@ -1774,23 +1996,25 @@ Keep it non-technical and actionable. Do not use markdown.`;
     if (!this.page) return null;
 
     try {
-      return await this.page.evaluate(() => {
-        // Capture form values, URL, and key page elements
-        const formData: Record<string, any> = {};
-        document.querySelectorAll('input, textarea, select').forEach((el: any) => {
-          const id = el.id || el.name || el.className;
-          if (id) {
-            formData[id] = el.value || el.checked || el.selectedOptions?.[0]?.text;
-          }
-        });
+      return await this.page.evaluate(`
+        (() => {
+          // Capture form values, URL, and key page elements
+          const formData = {};
+          document.querySelectorAll('input, textarea, select').forEach((el) => {
+            const id = el.id || el.name || el.className;
+            if (id) {
+              formData[id] = el.value || el.checked || el.selectedOptions?.[0]?.text;
+            }
+          });
 
-        return {
-          url: window.location.href,
-          title: document.title,
-          formData,
-          visibleText: document.body.innerText.slice(0, 5000) // First 5000 chars
-        };
-      });
+          return {
+            url: window.location.href,
+            title: document.title,
+            formData,
+            visibleText: document.body.innerText.slice(0, 5000) // First 5000 chars
+          };
+        })()
+      `);
     } catch (error) {
       console.error('[generator] Failed to capture page snapshot:', error);
       return null;

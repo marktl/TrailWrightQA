@@ -64,6 +64,10 @@ export default function GenerationViewer() {
   const chatTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [autoApprovePlan, setAutoApprovePlan] = useState(false);
 
+  // Element picker state
+  const [pickingElement, setPickingElement] = useState(false);
+  const [pickElementError, setPickElementError] = useState<string | null>(null);
+
   function addCategoryOption(name?: string | null) {
     const trimmed = name?.trim();
     if (!trimmed) {
@@ -194,10 +198,10 @@ export default function GenerationViewer() {
         setState((prev) =>
           prev
             ? {
-                ...prev,
-                stepsTaken: prev.stepsTaken + 1,
-                recordedSteps: [...prev.recordedSteps, event.payload]
-              }
+              ...prev,
+              stepsTaken: prev.stepsTaken + 1,
+              recordedSteps: [...prev.recordedSteps, event.payload]
+            }
             : null
         );
         break;
@@ -548,6 +552,49 @@ export default function GenerationViewer() {
       setError(message);
     } finally {
       setRejectingPlan(false);
+    }
+  }
+
+  async function handlePickElement() {
+    if (!sessionId || pickingElement) return;
+
+    setPickingElement(true);
+    setPickElementError(null);
+
+    try {
+      const result = await api.pickElement(sessionId);
+
+      if (result.success && result.selector) {
+        // Try to copy to clipboard, but handle browser restrictions
+        try {
+          await navigator.clipboard.writeText(result.selector);
+          setAutoSaveNotice('Selector copied to clipboard!');
+        } catch (err) {
+          // Fallback if clipboard write is blocked (e.g. lack of user activation)
+          setAutoSaveNotice('Selector added to input');
+        }
+        setTimeout(() => setAutoSaveNotice(null), 3000);
+
+        // Insert the picked selector into chat input
+        const selectorText = `Using selector: ${result.selector}`;
+        setChatInput((prev) => {
+          const trimmed = prev.trim();
+          if (trimmed) {
+            return `${trimmed}\n\n${selectorText}`;
+          }
+          return selectorText;
+        });
+
+        // Focus the textarea
+        setTimeout(() => {
+          chatTextareaRef.current?.focus();
+        }, 100);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to pick element';
+      setPickElementError(message);
+    } finally {
+      setPickingElement(false);
     }
   }
 
@@ -1236,15 +1283,14 @@ export default function GenerationViewer() {
               state.chat.map((msg) => (
                 <div
                   key={msg.id}
-                  className={`p-3 rounded-lg ${
-                    msg.isError
-                      ? 'bg-red-50 border-2 border-red-400 mr-8 shadow-md'
-                      : msg.role === 'user'
-                        ? 'bg-blue-50 border border-blue-100 ml-8'
-                        : msg.role === 'assistant'
-                          ? 'bg-gray-50 border border-gray-100 mr-8'
-                          : 'bg-slate-100 border border-slate-200'
-                  }`}
+                  className={`p-3 rounded-lg ${msg.isError
+                    ? 'bg-red-50 border-2 border-red-400 mr-8 shadow-md'
+                    : msg.role === 'user'
+                      ? 'bg-blue-50 border border-blue-100 ml-8'
+                      : msg.role === 'assistant'
+                        ? 'bg-gray-50 border border-gray-100 mr-8'
+                        : 'bg-slate-100 border border-slate-200'
+                    }`}
                 >
                   <div className="flex items-start gap-2">
                     {msg.isError && (
@@ -1413,11 +1459,10 @@ export default function GenerationViewer() {
                   ? composerPlaceholder
                   : 'Type an instruction or drag a variable here...'
               }
-              className={`w-full min-h-[90px] rounded-lg border px-3 py-2 text-sm ${
-                composerDisabled
-                  ? 'border-gray-200 bg-gray-50 text-gray-500 cursor-not-allowed'
-                  : 'border-gray-300 bg-white focus:border-blue-500 focus:ring-blue-500'
-              }`}
+              className={`w-full min-h-[90px] rounded-lg border px-3 py-2 text-sm ${composerDisabled
+                ? 'border-gray-200 bg-gray-50 text-gray-500 cursor-not-allowed'
+                : 'border-gray-300 bg-white focus:border-blue-500 focus:ring-blue-500'
+                }`}
             />
             <div className="flex flex-wrap items-center gap-3">
               <button
@@ -1436,6 +1481,32 @@ export default function GenerationViewer() {
                 Clear
               </button>
             </div>
+
+            {/* Element Picker Button - Only show in manual mode */}
+            {stepMode && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="flex items-start gap-3">
+                  <button
+                    onClick={handlePickElement}
+                    disabled={pickingElement || composerDisabled}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                    </svg>
+                    {pickingElement ? 'Click Element in Browser...' : 'Pick Element'}
+                  </button>
+                  <div className="flex-1">
+                    <p className="text-xs text-gray-600">
+                      Can't find an element? Click to visually select it from the browser window.
+                    </p>
+                    {pickElementError && (
+                      <p className="mt-1 text-xs text-red-600">{pickElementError}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Variable Panel - Only show in manual mode */}
@@ -1755,72 +1826,72 @@ export default function GenerationViewer() {
       {activeScreenshotIndex !== null &&
         activeScreenshotStep &&
         (activeScreenshotStep.screenshotData || activeScreenshotStep.screenshotPath) && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6"
-          role="dialog"
-          aria-modal="true"
-          onClick={closeScreenshotModal}
-        >
           <div
-            className="relative w-full max-w-5xl overflow-hidden rounded-xl bg-gray-900 shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6"
+            role="dialog"
+            aria-modal="true"
+            onClick={closeScreenshotModal}
           >
-            <button
-              type="button"
-              onClick={closeScreenshotModal}
-              className="absolute right-4 top-4 rounded-full bg-black/40 p-2 text-white transition hover:bg-black/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-              aria-label="Close screenshot viewer"
+            <div
+              className="relative w-full max-w-5xl overflow-hidden rounded-xl bg-gray-900 shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
             >
-              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
-            <div className="space-y-5 p-6 text-gray-100">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-gray-400">
-                  Step {activeScreenshotStep.stepNumber} of {steps.length}
-                </p>
-                <p className="mt-1 text-lg font-semibold text-white">
-                  {activeScreenshotStep.qaSummary}
-                </p>
-                {activeScreenshotStep.url && (
-                  <p className="mt-2 text-sm text-gray-300 break-all">
-                    <span className="font-medium text-gray-400">URL:</span> {activeScreenshotStep.url}
+              <button
+                type="button"
+                onClick={closeScreenshotModal}
+                className="absolute right-4 top-4 rounded-full bg-black/40 p-2 text-white transition hover:bg-black/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                aria-label="Close screenshot viewer"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+              <div className="space-y-5 p-6 text-gray-100">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-gray-400">
+                    Step {activeScreenshotStep.stepNumber} of {steps.length}
                   </p>
-                )}
-              </div>
-              <div className="relative overflow-hidden rounded-lg bg-black">
-                <img
-                  src={activeScreenshotStep.screenshotData || activeScreenshotStep.screenshotPath}
-                  alt={`Screenshot for step ${activeScreenshotStep.stepNumber}`}
-                  className="max-h-[70vh] w-full object-contain"
-                />
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <button
-                  type="button"
-                  onClick={showPreviousScreenshot}
-                  disabled={!hasPreviousScreenshot}
-                  className="rounded-lg border border-white/20 px-4 py-2 font-medium text-white transition hover:border-white/40 hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-gray-500"
-                >
-                  Previous
-                </button>
-                <span className="text-gray-300">
-                  Screenshot {screenshotProgress.position} of {screenshotProgress.total}
-                </span>
-                <button
-                  type="button"
-                  onClick={showNextScreenshot}
-                  disabled={!hasNextScreenshot}
-                  className="rounded-lg border border-white/20 px-4 py-2 font-medium text-white transition hover:border-white/40 hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-gray-500"
-                >
-                  Next
-                </button>
+                  <p className="mt-1 text-lg font-semibold text-white">
+                    {activeScreenshotStep.qaSummary}
+                  </p>
+                  {activeScreenshotStep.url && (
+                    <p className="mt-2 text-sm text-gray-300 break-all">
+                      <span className="font-medium text-gray-400">URL:</span> {activeScreenshotStep.url}
+                    </p>
+                  )}
+                </div>
+                <div className="relative overflow-hidden rounded-lg bg-black">
+                  <img
+                    src={activeScreenshotStep.screenshotData || activeScreenshotStep.screenshotPath}
+                    alt={`Screenshot for step ${activeScreenshotStep.stepNumber}`}
+                    className="max-h-[70vh] w-full object-contain"
+                  />
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <button
+                    type="button"
+                    onClick={showPreviousScreenshot}
+                    disabled={!hasPreviousScreenshot}
+                    className="rounded-lg border border-white/20 px-4 py-2 font-medium text-white transition hover:border-white/40 hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-gray-500"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-gray-300">
+                    Screenshot {screenshotProgress.position} of {screenshotProgress.total}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={showNextScreenshot}
+                    disabled={!hasNextScreenshot}
+                    className="rounded-lg border border-white/20 px-4 py-2 font-medium text-white transition hover:border-white/40 hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-gray-500"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ export interface PageState {
   url: string;
   title: string;
   accessibilityTree: string;
+  unlabeledInputs?: string;  // Supplementary info for inputs without accessible names
   hash: string;
   hasChanged: boolean;
 }
@@ -13,6 +14,8 @@ interface SimplifiedA11yNode {
   role?: string;
   name?: string;
   value?: string;
+  id?: string;        // HTML id attribute - useful for unlabeled inputs
+  htmlName?: string;  // HTML name attribute - useful for unlabeled inputs
   children?: SimplifiedA11yNode[];
 }
 
@@ -103,6 +106,62 @@ function computeHash(url: string, a11yTree: string): string {
 let lastHash: string | null = null;
 
 /**
+ * Capture unlabeled form inputs with their HTML attributes
+ * This supplements the accessibility tree for inputs that lack accessible names
+ */
+async function captureUnlabeledInputs(page: Page): Promise<string> {
+  try {
+    interface UnlabeledInput {
+      id?: string;
+      name?: string;
+      type?: string;
+      placeholder?: string;
+      className?: string;
+    }
+
+    const unlabeled = await page.evaluate(`
+      (() => {
+        const inputs = [];
+
+        // Find all form inputs
+        const elements = document.querySelectorAll('input, select, textarea');
+
+        elements.forEach((el) => {
+          const input = el;
+
+          // Check if input has an accessible label
+          const id = input.id;
+          const hasLabel = id && document.querySelector('label[for="' + id + '"]');
+          const hasAriaLabel = input.hasAttribute('aria-label') || input.hasAttribute('aria-labelledby');
+
+          // Only include if no accessible name (no label association)
+          if (!hasLabel && !hasAriaLabel) {
+            inputs.push({
+              id: input.id || undefined,
+              name: input.getAttribute('name') || undefined,
+              type: input.getAttribute('type') || input.tagName.toLowerCase(),
+              placeholder: input.getAttribute('placeholder') || undefined,
+              className: input.className || undefined
+            });
+          }
+        });
+
+        return inputs;
+      })()
+    `) as UnlabeledInput[];
+
+    if (unlabeled.length === 0) {
+      return '';
+    }
+
+    return JSON.stringify(unlabeled, null, 2);
+  } catch (error) {
+    // Don't fail page state capture if this fails
+    return '';
+  }
+}
+
+/**
  * Capture current page state using accessibility tree
  * Only returns full state if page has changed (hash-based)
  */
@@ -115,8 +174,11 @@ export async function capturePageState(page: Page): Promise<PageState> {
   const simplified = simplifyA11yTree(a11ySnapshot);
   const a11yTree = JSON.stringify(simplified, null, 2);
 
-  // Compute hash
-  const hash = computeHash(url, a11yTree);
+  // Get supplementary info for unlabeled inputs
+  const unlabeledInputs = await captureUnlabeledInputs(page);
+
+  // Compute hash (include unlabeled inputs in hash)
+  const hash = computeHash(url, a11yTree + unlabeledInputs);
   const hasChanged = hash !== lastHash;
 
   if (hasChanged) {
@@ -127,6 +189,7 @@ export async function capturePageState(page: Page): Promise<PageState> {
     url,
     title,
     accessibilityTree: a11yTree,
+    unlabeledInputs: unlabeledInputs || undefined,
     hash,
     hasChanged
   };
@@ -143,9 +206,19 @@ export function resetHashTracking(): void {
  * Format page state as readable text for AI
  */
 export function formatPageStateForAI(state: PageState): string {
-  return `URL: ${state.url}
+  let output = `URL: ${state.url}
 Title: ${state.title}
 
 Interactive Elements:
 ${state.accessibilityTree}`;
+
+  // Include unlabeled inputs if present
+  if (state.unlabeledInputs && state.unlabeledInputs.trim().length > 0) {
+    output += `
+
+Unlabeled Inputs (use id or name attribute to target):
+${state.unlabeledInputs}`;
+  }
+
+  return output;
 }
