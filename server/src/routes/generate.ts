@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { chromium } from 'playwright';
 import type {
   LiveGenerationOptions,
   LiveGenerationState,
@@ -10,6 +11,7 @@ import type {
   GenerationStatus
 } from '../../../shared/types.js';
 import { LiveTestGenerator } from '../playwright/liveTestGenerator.js';
+import { RecordModeGenerator, type RecordModeConfig } from '../playwright/recordModeGenerator.js';
 import { loadConfig } from '../storage/config.js';
 import { saveTest } from '../storage/tests.js';
 import { getCredentialById } from '../storage/credentials.js';
@@ -21,6 +23,7 @@ const router = express.Router();
 // Active generation sessions
 const sessions = new Map<string, LiveTestGenerator>();
 const persistedSessions = new Map<string, TestMetadata>();
+const recordSessions = new Map<string, RecordModeGenerator>();
 
 // SSE connections for real-time updates
 const sseClients = new Map<string, express.Response[]>();
@@ -227,11 +230,85 @@ router.post('/start', async (req, res) => {
   }
 });
 
+// Start a new record mode session
+router.post('/record/start', async (req, res) => {
+  try {
+    const { name, startUrl, description, credentialId } = req.body ?? {};
+
+    if (!name || !startUrl) {
+      return res.status(400).json({
+        error: 'Missing required fields: name, startUrl'
+      });
+    }
+
+    const config = await loadConfig(CONFIG.DATA_DIR);
+    const sessionId = `record-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    const recordConfig: RecordModeConfig = {
+      sessionId,
+      name,
+      startUrl,
+      description,
+      aiProvider: config.apiProvider,
+      credentialId
+    };
+
+    const generator = new RecordModeGenerator(recordConfig);
+    recordSessions.set(sessionId, generator);
+
+    const browser = await chromium.launch({ headless: true });
+    await generator.start(browser);
+
+    res.json({
+      sessionId,
+      state: generator.getState()
+    });
+  } catch (error) {
+    console.error('Failed to start recording:', error);
+    res.status(500).json({
+      error: 'Failed to start recording',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Stop a record mode session
+router.post('/:sessionId/record/stop', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const generator = recordSessions.get(sessionId);
+
+    if (!generator) {
+      return res.status(404).json({
+        error: 'Recording session not found'
+      });
+    }
+
+    generator.state.recordingActive = false;
+    generator.state.status = 'completed';
+
+    res.json({
+      state: generator.getState(),
+      recordedSteps: generator.getSteps()
+    });
+  } catch (error) {
+    console.error('Failed to stop recording:', error);
+    res.status(500).json({
+      error: 'Failed to stop recording',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 /**
  * Get current state of a generation session
  */
 router.get('/:sessionId/state', (req, res) => {
   const { sessionId } = req.params;
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    return res.json(recordGenerator.getState());
+  }
   const generator = sessions.get(sessionId);
 
   if (!generator) {
@@ -767,4 +844,5 @@ router.post('/:sessionId/save', async (req, res) => {
   }
 });
 
+export const generateRouter = router;
 export default router;
