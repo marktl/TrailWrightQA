@@ -1290,7 +1290,7 @@ export default function GenerationViewer() {
                 <div
                   key={msg.id}
                   className={`p-3 rounded-lg ${msg.isError
-                    ? 'bg-red-50 border-2 border-red-400 mr-8 shadow-md'
+                    ? 'bg-yellow-50 border-2 border-yellow-400 mr-8 shadow-md'
                     : msg.role === 'user'
                       ? 'bg-blue-50 border border-blue-100 ml-8'
                       : msg.role === 'assistant'
@@ -1301,7 +1301,7 @@ export default function GenerationViewer() {
                   <div className="flex items-start gap-2">
                     {msg.isError && (
                       <svg
-                        className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5"
+                        className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5"
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
@@ -1316,7 +1316,7 @@ export default function GenerationViewer() {
                       </svg>
                     )}
                     <div className="flex-1">
-                      <p className={`text-xs font-medium mb-1 ${msg.isError ? 'text-red-800' : 'text-gray-500'}`}>
+                      <p className={`text-xs font-medium mb-1 ${msg.isError ? 'text-yellow-800' : 'text-gray-500'}`}>
                         {msg.isError
                           ? '⚠️ Need More Guidance'
                           : msg.role === 'user'
@@ -1325,7 +1325,7 @@ export default function GenerationViewer() {
                               ? 'AI'
                               : 'System'}
                       </p>
-                      <p className={`text-sm whitespace-pre-line ${msg.isError ? 'text-red-900 font-medium' : 'text-gray-900'}`}>
+                      <p className={`text-sm whitespace-pre-line ${msg.isError ? 'text-yellow-900 font-medium' : 'text-gray-900'}`}>
                         {msg.message}
                       </p>
                     </div>
