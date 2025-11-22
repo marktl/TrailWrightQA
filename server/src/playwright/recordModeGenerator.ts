@@ -2,6 +2,7 @@ import type { Browser, Page } from 'playwright';
 import { EventEmitter } from 'events';
 import type { LiveGenerationState, RecordedStep } from '../../../shared/types.js';
 import { generateCodeFromInteraction } from '../ai/recordModePrompts.js';
+import { TOOLBAR_HTML, TOOLBAR_LISTENER_SCRIPT, getToolbarUpdateScript } from './toolbarInjection.js';
 
 export interface RecordModeConfig {
   sessionId: string;
@@ -55,6 +56,7 @@ export class RecordModeGenerator extends EventEmitter {
     this.page = await browser.newPage();
 
     await this.setupEventListeners();
+    await this.injectToolbar();
 
     this.state.status = 'running';
     this.state.recordingActive = true;
@@ -183,6 +185,7 @@ export class RecordModeGenerator extends EventEmitter {
     this.state.stepsTaken = this.recordedSteps.length;
     this.state.updatedAt = new Date().toISOString();
 
+    await this.updateToolbar();
     this.emit('step', step);
   }
 
@@ -211,6 +214,7 @@ export class RecordModeGenerator extends EventEmitter {
     this.state.stepsTaken = this.recordedSteps.length;
     this.state.updatedAt = new Date().toISOString();
 
+    await this.updateToolbar();
     this.emit('step', step);
   }
 
@@ -248,6 +252,7 @@ export class RecordModeGenerator extends EventEmitter {
     this.state.stepsTaken = this.recordedSteps.length;
     this.state.updatedAt = new Date().toISOString();
 
+    await this.updateToolbar();
     this.emit('step', step);
   }
 
@@ -288,6 +293,7 @@ export class RecordModeGenerator extends EventEmitter {
     this.state.updatedAt = new Date().toISOString();
     this.activeInputs.delete(selector);
 
+    await this.updateToolbar();
     this.emit('step', step);
   }
 
@@ -339,6 +345,45 @@ export class RecordModeGenerator extends EventEmitter {
     } catch (error) {
       console.error('Failed to capture screenshot:', error);
       return undefined;
+    }
+  }
+
+  private async injectToolbar(): Promise<void> {
+    if (!this.page) return;
+
+    await (this.page as any).exposeFunction('__twStopRecording', async () => {
+      await this.stop();
+    });
+
+    await (this.page as any).addInitScript(
+      (html: string, listenerScript: string) => {
+        window.addEventListener('DOMContentLoaded', () => {
+          const wrapper = document.createElement('div');
+          wrapper.innerHTML = html;
+          const toolbar = wrapper.firstChild;
+          if (toolbar) {
+            document.body.insertBefore(toolbar, document.body.firstChild);
+          }
+
+          // eslint-disable-next-line no-eval
+          eval(listenerScript);
+        });
+      },
+      TOOLBAR_HTML,
+      TOOLBAR_LISTENER_SCRIPT
+    );
+  }
+
+  private async updateToolbar(): Promise<void> {
+    if (!this.page) return;
+
+    try {
+      await (this.page as any).evaluate((script: string) => {
+        // eslint-disable-next-line no-eval
+        eval(script);
+      }, getToolbarUpdateScript(this.stepCounter));
+    } catch {
+      // Toolbar may not be ready; ignore errors
     }
   }
 
