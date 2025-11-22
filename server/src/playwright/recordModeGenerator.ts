@@ -80,6 +80,11 @@ export class RecordModeGenerator extends EventEmitter {
     (this.page as any).on('blur', async (event: any) => {
       await this.handleBlurEvent(event);
     });
+
+    // Change events (for select dropdowns)
+    (this.page as any).on('change', async (event: any) => {
+      await this.handleChangeEvent(event);
+    });
   }
 
   private async handleClickEvent(event: any): Promise<void> {
@@ -92,6 +97,32 @@ export class RecordModeGenerator extends EventEmitter {
       elementInfo,
       qaSummary: `Click ${elementInfo.name || 'element'}`,
       playwrightCode: `await page.${elementInfo.selector}.click();`,
+      timestamp: new Date().toISOString(),
+      url: currentUrl
+    };
+
+    this.recordedSteps.push(step);
+    this.state.recordedSteps = [...this.recordedSteps];
+    this.state.steps = [...this.recordedSteps];
+    this.state.stepsTaken = this.recordedSteps.length;
+    this.state.updatedAt = new Date().toISOString();
+
+    this.emit('step', step);
+  }
+
+  private async handleChangeEvent(event: any): Promise<void> {
+    if (event?.target?.tagName !== 'SELECT') return;
+
+    const elementInfo = await this.captureElementInfo(event.target);
+    const selectedValue = event.target?.value;
+    const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
+
+    const step: RecordedStep = {
+      stepNumber: ++this.stepCounter,
+      interactionType: 'select',
+      elementInfo,
+      qaSummary: `Select '${selectedValue}' from ${elementInfo.name || 'dropdown'}`,
+      playwrightCode: `await page.${elementInfo.selector}.selectOption('${selectedValue}');`,
       timestamp: new Date().toISOString(),
       url: currentUrl
     };

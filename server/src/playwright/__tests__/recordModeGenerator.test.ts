@@ -130,4 +130,40 @@ describe('RecordModeGenerator', () => {
     });
     expect(step.qaSummary).toContain('test@example.com');
   });
+
+  it('should capture select dropdown changes', async () => {
+    const mockSelect = {
+      tagName: 'SELECT',
+      getAttribute: vi.fn((attr) => (attr === 'aria-label' ? 'Country' : null)),
+      value: 'USA',
+      options: [{ value: 'USA', text: 'United States' }],
+      selectedIndex: 0,
+    };
+
+    generator = new RecordModeGenerator({
+      sessionId: 'test-session-123',
+      name: 'Test Recording',
+      startUrl: 'https://example.com',
+      aiProvider: 'anthropic',
+    });
+
+    await generator.start(mockBrowser);
+
+    const changeHandler = (mockPage.on as any).mock.calls.find(
+      ([event]) => event === 'change'
+    )?.[1];
+
+    const stepPromise = new Promise((resolve) => {
+      generator.on('step', resolve);
+    });
+
+    await changeHandler?.({ target: mockSelect });
+
+    const step = await stepPromise;
+    expect(step).toMatchObject({
+      interactionType: 'select',
+      stepNumber: 1,
+    });
+    expect(step.qaSummary).toContain('USA');
+  });
 });
