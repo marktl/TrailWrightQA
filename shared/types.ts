@@ -166,11 +166,19 @@ export interface RecordedStep {
   url?: string;
   screenshotPath?: string;
   screenshotData?: string;
+  waitCode?: string;
+  interactionType?: 'click' | 'fill' | 'select' | 'navigate' | 'assert';
+  elementInfo?: {
+    role?: string;
+    name?: string;
+    selector: string;
+  };
+  networkDelay?: number;
 }
 
 export type CaptureMode = 'accessibility' | 'screenshot' | 'hybrid';
 
-export type GenerationMode = 'auto' | 'manual';
+export type GenerationMode = 'auto' | 'manual' | 'record';
 
 export interface LiveGenerationOptions {
   startUrl: string;
@@ -220,6 +228,12 @@ export interface LiveGenerationState {
   };
   mode: GenerationMode;
   pendingPlan?: StepPlan; // For manual mode: plan awaiting approval
+  // Record mode-specific fields
+  recordingActive?: boolean;
+  assertionPickerActive?: boolean;
+  steps?: RecordedStep[];
+  testName?: string;
+  createdAt?: string;
 }
 
 // Step planning types for manual mode
