@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RecordModeGenerator } from '../recordModeGenerator';
+import { generateCodeFromInteraction } from '../../ai/recordModePrompts.js';
 import type { Page, Browser } from 'playwright';
+
+vi.mock('../../ai/recordModePrompts.js', () => ({
+  generateCodeFromInteraction: vi.fn(),
+}));
 
 describe('RecordModeGenerator', () => {
   let generator: RecordModeGenerator;
@@ -8,6 +13,8 @@ describe('RecordModeGenerator', () => {
   let mockBrowser: Browser;
 
   beforeEach(() => {
+    vi.clearAllMocks();
+
     mockPage = {
       on: vi.fn(),
       goto: vi.fn(),
@@ -19,6 +26,12 @@ describe('RecordModeGenerator', () => {
       newPage: vi.fn().mockResolvedValue(mockPage),
       close: vi.fn(),
     } as any;
+
+    (generateCodeFromInteraction as any).mockResolvedValue({
+      playwrightCode: '',
+      qaSummary: 'Perform action',
+      waitHint: null,
+    });
   });
 
   afterEach(async () => {
@@ -198,5 +211,44 @@ describe('RecordModeGenerator', () => {
       interactionType: 'navigate',
     });
     expect(step.qaSummary).toContain('dashboard');
+  });
+
+  it('should use AI to generate code for interactions', async () => {
+    const mockAIResponse = {
+      playwrightCode: "await page.getByRole('button', { name: 'Submit' }).click();",
+      qaSummary: "Click 'Submit' button",
+      waitHint: null,
+    };
+
+    (generateCodeFromInteraction as any).mockResolvedValue(mockAIResponse);
+
+    generator = new RecordModeGenerator({
+      sessionId: 'test-session-123',
+      name: 'Test Recording',
+      startUrl: 'https://example.com',
+      aiProvider: 'anthropic',
+    });
+
+    await generator.start(mockBrowser);
+
+    const clickHandler = (mockPage.on as any).mock.calls.find(
+      ([event]) => event === 'click'
+    )?.[1];
+
+    const stepPromise = new Promise((resolve) => {
+      generator.on('step', resolve);
+    });
+
+    const mockElement = {
+      tagName: 'BUTTON',
+      getAttribute: vi.fn(() => 'Submit'),
+      textContent: 'Submit',
+    };
+
+    await clickHandler?.({ target: mockElement });
+
+    const step = await stepPromise;
+    expect(step.playwrightCode).toBe(mockAIResponse.playwrightCode);
+    expect(step.qaSummary).toBe(mockAIResponse.qaSummary);
   });
 });

@@ -1,6 +1,7 @@
 import type { Browser, Page } from 'playwright';
 import { EventEmitter } from 'events';
 import type { LiveGenerationState, RecordedStep } from '../../../shared/types.js';
+import { generateCodeFromInteraction } from '../ai/recordModePrompts.js';
 
 export interface RecordModeConfig {
   sessionId: string;
@@ -97,14 +98,31 @@ export class RecordModeGenerator extends EventEmitter {
     const elementInfo = await this.captureElementInfo(event.target);
     const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
 
+    const aiResponse = await generateCodeFromInteraction(
+      {
+        type: 'click',
+        element: {
+          role: elementInfo.role,
+          name: elementInfo.name,
+          tagName: event?.target?.tagName
+        }
+      },
+      {
+        url: currentUrl,
+        stepNumber: this.stepCounter + 1
+      },
+      this.config.aiProvider
+    );
+
     const step: RecordedStep = {
       stepNumber: ++this.stepCounter,
       interactionType: 'click',
       elementInfo,
-      qaSummary: `Click ${elementInfo.name || 'element'}`,
-      playwrightCode: `await page.${elementInfo.selector}.click();`,
+      qaSummary: aiResponse.qaSummary,
+      playwrightCode: aiResponse.playwrightCode,
       timestamp: new Date().toISOString(),
-      url: currentUrl
+      url: currentUrl,
+      waitCode: aiResponse.waitHint || undefined
     };
 
     this.recordedSteps.push(step);
