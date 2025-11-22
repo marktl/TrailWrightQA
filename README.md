@@ -8,6 +8,7 @@ Empower BA and QA staff to create professional browser automation tests without 
 
 - 🤖 **AI Self-Driving Mode** - Give AI a goal and watch it autonomously build complete tests
 - 💬 **AI Step-by-Step Mode** - Interactive chat interface to guide test creation with granular control
+- 🎥 **Record Mode** - Perform actions yourself while AI generates Playwright code automatically
 - 📊 **Data-Driven Testing** - Run tests with multiple variable sets using spreadsheet UI or CSV import
 - 👀 **Real-Time Viewer** - See each action as it happens with QA-friendly summaries
 - 🎯 **One-Click Execution** - Run tests and view results instantly
