@@ -97,6 +97,7 @@ export class RecordModeGenerator extends EventEmitter {
   private async handleClickEvent(event: any): Promise<void> {
     const elementInfo = await this.captureElementInfo(event.target);
     const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
+    const screenshotData = await this.captureScreenshot();
 
     const aiResponse = await generateCodeFromInteraction(
       {
@@ -122,7 +123,8 @@ export class RecordModeGenerator extends EventEmitter {
       playwrightCode: aiResponse.playwrightCode,
       timestamp: new Date().toISOString(),
       url: currentUrl,
-      waitCode: aiResponse.waitHint || undefined
+      waitCode: aiResponse.waitHint || undefined,
+      screenshotData
     };
 
     this.recordedSteps.push(step);
@@ -140,6 +142,7 @@ export class RecordModeGenerator extends EventEmitter {
     const elementInfo = await this.captureElementInfo(event.target);
     const selectedValue = event.target?.value;
     const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
+    const screenshotData = await this.captureScreenshot();
 
     const step: RecordedStep = {
       stepNumber: ++this.stepCounter,
@@ -148,7 +151,8 @@ export class RecordModeGenerator extends EventEmitter {
       qaSummary: `Select '${selectedValue}' from ${elementInfo.name || 'dropdown'}`,
       playwrightCode: `await page.${elementInfo.selector}.selectOption('${selectedValue}');`,
       timestamp: new Date().toISOString(),
-      url: currentUrl
+      url: currentUrl,
+      screenshotData
     };
 
     this.recordedSteps.push(step);
@@ -173,6 +177,7 @@ export class RecordModeGenerator extends EventEmitter {
     if (mainFrame && frame !== mainFrame) return;
 
     const url = frame?.url ? frame.url() : '';
+    const screenshotData = await this.captureScreenshot();
 
     const step: RecordedStep = {
       stepNumber: ++this.stepCounter,
@@ -183,7 +188,8 @@ export class RecordModeGenerator extends EventEmitter {
       qaSummary: `Navigate to ${url}`,
       playwrightCode: `await page.goto('${url}');`,
       timestamp: new Date().toISOString(),
-      url
+      url,
+      screenshotData
     };
 
     this.recordedSteps.push(step);
@@ -212,6 +218,7 @@ export class RecordModeGenerator extends EventEmitter {
 
     const elementInfo = await this.captureElementInfo(inputData.element);
     const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
+    const screenshotData = await this.captureScreenshot();
 
     const step: RecordedStep = {
       stepNumber: ++this.stepCounter,
@@ -220,7 +227,8 @@ export class RecordModeGenerator extends EventEmitter {
       qaSummary: `Enter '${inputData.value}' into ${elementInfo.name || 'input'}`,
       playwrightCode: `await page.${elementInfo.selector}.fill('${inputData.value}');`,
       timestamp: new Date().toISOString(),
-      url: currentUrl
+      url: currentUrl,
+      screenshotData
     };
 
     this.recordedSteps.push(step);
@@ -256,6 +264,28 @@ export class RecordModeGenerator extends EventEmitter {
   private async generateUniqueSelector(element: any): Promise<string> {
     const label = element?.getAttribute?.('aria-label') || element?.getAttribute?.('name') || '';
     return `${element?.tagName || 'element'}-${label}`;
+  }
+
+  private async captureScreenshot(): Promise<string | undefined> {
+    if (!this.page || typeof (this.page as any).screenshot !== 'function') {
+      return undefined;
+    }
+
+    try {
+      const screenshotBuffer = await (this.page as any).screenshot({
+        type: 'jpeg',
+        quality: 80
+      });
+      if (!screenshotBuffer) {
+        return undefined;
+      }
+
+      const buffer = Buffer.isBuffer(screenshotBuffer) ? screenshotBuffer : Buffer.from(screenshotBuffer);
+      return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+    } catch (error) {
+      console.error('Failed to capture screenshot:', error);
+      return undefined;
+    }
   }
 
   async cleanup(): Promise<void> {

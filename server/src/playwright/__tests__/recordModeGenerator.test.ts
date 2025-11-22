@@ -251,4 +251,32 @@ describe('RecordModeGenerator', () => {
     expect(step.playwrightCode).toBe(mockAIResponse.playwrightCode);
     expect(step.qaSummary).toBe(mockAIResponse.qaSummary);
   });
+
+  it('should capture screenshots for each step', async () => {
+    const mockScreenshotBuffer = Buffer.from('fake-image-data');
+    (mockPage as any).screenshot = vi.fn().mockResolvedValue(mockScreenshotBuffer);
+
+    generator = new RecordModeGenerator({
+      sessionId: 'test-session-123',
+      name: 'Test Recording',
+      startUrl: 'https://example.com',
+      aiProvider: 'anthropic',
+    });
+
+    await generator.start(mockBrowser);
+
+    const stepPromise = new Promise((resolve) => {
+      generator.on('step', resolve);
+    });
+
+    const clickHandler = (mockPage.on as any).mock.calls.find(
+      ([event]) => event === 'click'
+    )?.[1];
+
+    await clickHandler?.({ target: { tagName: 'BUTTON', textContent: 'Submit', getAttribute: vi.fn() } });
+
+    const step = await stepPromise;
+    expect(step.screenshotData).toBeDefined();
+    expect((mockPage as any).screenshot).toHaveBeenCalledWith({ type: 'jpeg', quality: 80 });
+  });
 });
