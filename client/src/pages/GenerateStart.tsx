@@ -7,6 +7,7 @@ import { SCREEN_SIZE_PRESETS } from '../constants/screenSizes';
 export default function GenerateStart() {
   const navigate = useNavigate();
   const [startUrl, setStartUrl] = useState('');
+  const [recordTestName, setRecordTestName] = useState('');
   const [goal, setGoal] = useState('');
   const [successCriteria, setSuccessCriteria] = useState('');
   const [maxSteps, setMaxSteps] = useState('20');
@@ -27,7 +28,7 @@ export default function GenerateStart() {
   const [savingCredential, setSavingCredential] = useState(false);
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [selectedScreenSize, setSelectedScreenSize] = useState('');
-  const [mode, setMode] = useState<'auto' | 'manual' | ''>('');
+  const [mode, setMode] = useState<'auto' | 'manual' | 'record' | ''>('');
 
   useEffect(() => {
     let cancelled = false;
@@ -114,12 +115,38 @@ export default function GenerateStart() {
       return;
     }
 
+    if (mode === 'record' && !recordTestName.trim()) {
+      setMessage('Provide a test name for recording.');
+      return;
+    }
+
     const parsedSteps = mode === 'auto' ? Number.parseInt(maxSteps, 10) || 20 : undefined;
 
     setIsStarting(true);
     setMessage(null);
 
     try {
+      if (mode === 'record') {
+        const response = await fetch('/api/generate/record/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: recordTestName.trim(),
+            startUrl: trimmedUrl,
+            description: successCriteria.trim() || undefined
+          })
+        });
+
+        if (!response.ok) {
+          const errBody = await response.json().catch(() => ({}));
+          throw new Error(errBody.error || 'Failed to start recording');
+        }
+
+        const data = await response.json();
+        navigate(`/viewer/${data.sessionId}`);
+        return;
+      }
+
       const viewportSize = selectedScreenSize
         ? SCREEN_SIZE_PRESETS.find((p) => p.id === selectedScreenSize)?.viewport
         : undefined;
@@ -185,7 +212,7 @@ export default function GenerateStart() {
         <form onSubmit={handleSubmit} className="rounded-lg bg-white p-6 shadow space-y-5">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Mode</label>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-3">
               <button
                 type="button"
                 onClick={() => setMode('auto')}
@@ -212,11 +239,28 @@ export default function GenerateStart() {
                   Browser opens and waits for each instruction (e.g., “click Register”).
                 </p>
               </button>
+              <button
+                type="button"
+                onClick={() => setMode('record')}
+                className={`rounded-lg border px-4 py-3 text-left transition ${mode === 'record'
+                    ? 'border-purple-500 bg-purple-50 text-purple-900 shadow-sm'
+                    : 'border-gray-200 text-gray-700 hover:border-gray-300'
+                  }`}
+              >
+                <p className="text-sm font-semibold">Record Mode</p>
+                <p className="text-xs mt-1 text-gray-600">
+                  You drive the browser; we capture every click, fill, select, and navigation with AI code + screenshots.
+                </p>
+              </button>
             </div>
             {mode ? (
               mode === 'manual' ? (
                 <p className="mt-2 text-xs text-gray-500">
                   Chromium launches at your URL and pauses after every action so you can steer the next step.
+                </p>
+              ) : mode === 'record' ? (
+                <p className="mt-2 text-xs text-gray-500">
+                  Launch a visible browser at your start URL and record steps in real time.
                 </p>
               ) : (
                 <p className="mt-2 text-xs text-gray-500">
@@ -234,6 +278,20 @@ export default function GenerateStart() {
             </div>
           ) : (
             <>
+              {mode === 'record' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Test Name *</label>
+                  <input
+                    type="text"
+                    value={recordTestName}
+                    onChange={(e) => setRecordTestName(e.target.value)}
+                    required
+                    placeholder="e.g., Checkout recording"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Starting URL *</label>
                 <input
@@ -257,17 +315,6 @@ export default function GenerateStart() {
                       rows={4}
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       placeholder="Example: Register as Jennifer Test_Physician and confirm dashboard greets the doctor."
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Success Criteria (optional)</label>
-                    <textarea
-                      value={successCriteria}
-                      onChange={(e) => setSuccessCriteria(e.target.value)}
-                      rows={3}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder={'Example: Dashboard shows "Active MD License" card.'}
                     />
                   </div>
 
@@ -425,6 +472,23 @@ export default function GenerateStart() {
                   </span>
                 </label>
               )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {mode === 'record' ? 'Description (optional)' : 'Success Criteria (optional)'}
+                </label>
+                <textarea
+                  value={successCriteria}
+                  onChange={(e) => setSuccessCriteria(e.target.value)}
+                  rows={mode === 'record' ? 2 : 3}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder={
+                    mode === 'record'
+                      ? 'Add context for your recording'
+                      : 'What must be true for the test to succeed? (e.g., "shows order confirmation page")'
+                  }
+                />
+              </div>
             </>
           )}
 
@@ -438,6 +502,7 @@ export default function GenerateStart() {
               onClick={() => {
                 setMode('');
                 setStartUrl(defaultStartUrl || '');
+                setRecordTestName('');
                 setGoal('');
                 setSuccessCriteria('');
                 setMaxSteps('20');
@@ -458,7 +523,7 @@ export default function GenerateStart() {
               disabled={isStarting}
               className="rounded-lg bg-blue-600 px-5 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              {isStarting ? 'Starting…' : 'Start AI Generation'}
+              {isStarting ? 'Starting…' : mode === 'record' ? 'Start Recording' : 'Start AI Generation'}
             </button>
           </div>
         </form>
