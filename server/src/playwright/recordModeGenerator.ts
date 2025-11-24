@@ -89,6 +89,18 @@ export class RecordModeGenerator extends EventEmitter {
     await (this.page as any).addInitScript(() => {
       document.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
+
+        // Ignore clicks on SELECT and OPTION elements - we handle those via 'change' event
+        if (target.tagName === 'SELECT' || target.tagName === 'OPTION') {
+          return;
+        }
+
+        // Also ignore clicks inside SELECT elements (propagated from OPTIONs)
+        const parentSelect = target.closest('select');
+        if (parentSelect) {
+          return;
+        }
+
         (window as any).__twRecordClick?.({
           tagName: target.tagName,
           role: target.getAttribute('role'),

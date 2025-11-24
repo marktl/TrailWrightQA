@@ -63,6 +63,7 @@ export default function GenerationViewer() {
   const [variables, setVariables] = useState<Variable[]>([]);
   const [variablesError, setVariablesError] = useState<string | null>(null);
   const chatTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const stepsContainerRef = useRef<HTMLDivElement>(null);
   const [autoApprovePlan, setAutoApprovePlan] = useState(false);
 
   // Element picker state
@@ -355,6 +356,13 @@ export default function GenerationViewer() {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
   }, [state?.chat]);
+
+  // Auto-scroll steps container when new steps are added (record mode)
+  useEffect(() => {
+    if (stepsContainerRef.current && steps.length > 0) {
+      stepsContainerRef.current.scrollTop = stepsContainerRef.current.scrollHeight;
+    }
+  }, [steps.length]);
 
   // Auto-approve plans if checkbox is enabled
   useEffect(() => {
@@ -1664,7 +1672,7 @@ export default function GenerationViewer() {
           {steps.length === 0 ? (
             <p className="text-gray-500 text-sm">No steps recorded yet...</p>
           ) : (
-            <div className="space-y-3">
+            <div ref={stepsContainerRef} className="space-y-3 max-h-[600px] overflow-y-auto">
               {steps.map((step, index) => (
                 <div
                   key={step.stepNumber}

@@ -850,13 +850,33 @@ router.post('/:sessionId/save', async (req, res) => {
 
       await fs.writeFile(testPath, testCode, 'utf-8');
 
+      const state = recordGenerator.getState();
+      const steps = recordGenerator.getSteps();
+
+      // Create test metadata matching the expected structure
+      const metadata: TestMetadata = {
+        id: sessionId,
+        name: name || state.testName || 'Recorded Test',
+        description: description || state.goal || undefined,
+        tags: tags || ['ai-generated', 'record-mode'],
+        folder: folder || undefined,
+        credentialId: credentialId || undefined,
+        startUrl: state.startUrl,
+        createdAt: state.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        steps: steps.map(step => ({
+          number: step.stepNumber,
+          qaSummary: step.qaSummary,
+          playwrightCode: step.playwrightCode
+        }))
+      };
+
       await recordGenerator.cleanup();
       recordSessions.delete(sessionId);
 
       return res.json({
         success: true,
-        testId: sessionId,
-        testPath
+        test: metadata
       });
     } catch (error) {
       console.error('Failed to save test:', error);
