@@ -357,12 +357,7 @@ export default function GenerationViewer() {
     }
   }, [state?.chat]);
 
-  // Auto-scroll steps container when new steps are added (record mode)
-  useEffect(() => {
-    if (stepsContainerRef.current && steps.length > 0) {
-      stepsContainerRef.current.scrollTop = stepsContainerRef.current.scrollHeight;
-    }
-  }, [steps.length]);
+  // Auto-scroll removed - steps are now shown newest-first in record mode
 
   // Auto-approve plans if checkbox is enabled
   useEffect(() => {
@@ -861,6 +856,9 @@ export default function GenerationViewer() {
 
       if (returnToDashboard) {
         navigate('/');
+      } else if (recordMode) {
+        // For record mode, redirect to test workspace after save
+        navigate(`/tests/${test.id}`);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save test';
@@ -1673,7 +1671,7 @@ export default function GenerationViewer() {
             <p className="text-gray-500 text-sm">No steps recorded yet...</p>
           ) : (
             <div ref={stepsContainerRef} className="space-y-3 max-h-[600px] overflow-y-auto">
-              {steps.map((step, index) => (
+              {(recordMode ? [...steps].reverse() : steps).map((step, index) => (
                 <div
                   key={step.stepNumber}
                   className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition"
@@ -1905,7 +1903,7 @@ export default function GenerationViewer() {
                     disabled={savingTest}
                     className="rounded-lg border border-blue-600 bg-white px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50"
                   >
-                    {savingTest ? 'Saving…' : 'Save and Continue'}
+                    {savingTest ? 'Saving…' : recordMode ? 'Save and Edit Test' : 'Save and Continue'}
                   </button>
                   <button
                     type="button"
