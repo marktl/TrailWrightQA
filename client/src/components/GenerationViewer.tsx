@@ -14,9 +14,15 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
         throw new Error('Failed to save test');
       }
 
-      await response.json();
-      alert('Test saved successfully!');
-      window.location.href = '/tests';
+      const data = await response.json();
+      console.log('Save response:', data);
+
+      // Redirect to test workspace instead of showing alert
+      if (data.test?.id) {
+        window.location.href = `/tests/${data.test.id}`;
+      } else {
+        window.location.href = '/';
+      }
     } catch (error) {
       console.error('Failed to save:', error);
       alert('Failed to save test');
@@ -64,7 +70,7 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
       )}
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {steps.map((step) => (
+        {(isRecordMode ? [...steps].reverse() : steps).map((step) => (
           <div
             key={step.stepNumber}
             className="bg-white border rounded-lg p-4 shadow-sm"
