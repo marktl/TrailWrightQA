@@ -521,6 +521,22 @@ export default function GenerationViewer() {
     }
   }
 
+  async function handleStopRecording() {
+    if (!sessionId || isStopping) return;
+
+    setIsStopping(true);
+    try {
+      await fetch(`/api/generate/${sessionId}/record/stop`, {
+        method: 'POST',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to stop recording';
+      setError(message);
+    } finally {
+      setIsStopping(false);
+    }
+  }
+
   async function handleInterrupt() {
     if (!sessionId || isInterrupting) return;
 
@@ -875,6 +891,7 @@ export default function GenerationViewer() {
   }
 
   const stepMode = state?.mode === 'manual';
+  const recordMode = state?.mode === 'record';
   const statusColors = {
     initializing: 'bg-yellow-100 text-yellow-800',
     running: 'bg-blue-100 text-blue-800',
@@ -892,11 +909,12 @@ export default function GenerationViewer() {
   const waitingForInstruction = stepMode && state?.status === 'awaiting_input';
   const feedbackDisabled = !state || state.status === 'initializing' || isRunning;
   const composerDisabled = stepMode ? !waitingForInstruction || sendingChat : feedbackDisabled;
-  const canPause = !stepMode && Boolean(isRunning);
+  const canPause = !stepMode && !recordMode && Boolean(isRunning);
   const canInterrupt = Boolean(stepMode && state && (state.status === 'running' || state.status === 'thinking'));
-  const canStop = Boolean(!stepMode && state && (isRunning || isPaused));
-  const canRestart = Boolean(state && state.status !== 'initializing' && !stepMode);
-  const canSave = stepMode
+  const canStop = Boolean(!stepMode && !recordMode && state && (isRunning || isPaused));
+  const canRestart = Boolean(state && state.status !== 'initializing' && !stepMode && !recordMode);
+  const canStopRecording = Boolean(recordMode && state && state.recordingActive);
+  const canSave = stepMode || recordMode
     ? Boolean(state && steps.length > 0)
     : Boolean(state && (state.status === 'completed' || state.status === 'failed' || state.status === 'stopped'));
   const composerPlaceholder = stepMode
@@ -1183,6 +1201,15 @@ export default function GenerationViewer() {
                   {isStopping ? 'Stopping…' : 'Stop'}
                 </button>
               )}
+              {canStopRecording && (
+                <button
+                  onClick={handleStopRecording}
+                  disabled={isStopping}
+                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+                >
+                  {isStopping ? 'Stopping…' : 'Stop Recording'}
+                </button>
+              )}
               {canRestart && (
                 <button
                   onClick={handleRestart}
@@ -1224,23 +1251,24 @@ export default function GenerationViewer() {
         </div>
 
         {/* Guidance / Manual Panel */}
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900">
-                {stepMode ? 'Step-by-step Builder' : 'Guidance & Feedback'}
-              </h2>
-              <p className="text-sm text-gray-600 mt-1">
-                {stepMode
-                  ? waitingForInstruction
-                    ? 'Describe what the browser should do next (you can include multiple actions). I will keep going until it is done.'
-                    : 'Working on your instruction. Use Interrupt if you need to stop early.'
-                  : feedbackDisabled
-                    ? 'Pause or stop the generation to provide updated instructions.'
-                    : 'Share feedback to steer the next actions before resuming.'}
-              </p>
-            </div>
-            {!stepMode && isPaused && (
+        {!recordMode && (
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {stepMode ? 'Step-by-step Builder' : 'Guidance & Feedback'}
+                </h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  {stepMode
+                    ? waitingForInstruction
+                      ? 'Describe what the browser should do next (you can include multiple actions). I will keep going until it is done.'
+                      : 'Working on your instruction. Use Interrupt if you need to stop early.'
+                    : feedbackDisabled
+                      ? 'Pause or stop the generation to provide updated instructions.'
+                      : 'Share feedback to steer the next actions before resuming.'}
+                </p>
+              </div>
+              {!stepMode && isPaused && (
               <button
                 onClick={handleResume}
                 disabled={isResuming}
@@ -1593,6 +1621,40 @@ export default function GenerationViewer() {
             )}
           </div>
         </div>
+        )}
+
+        {/* Record Mode Info Panel */}
+        {recordMode && (
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0">
+                <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
+                  <span className="text-2xl">🎥</span>
+                </div>
+              </div>
+              <div className="flex-1">
+                <h2 className="text-xl font-semibold text-gray-900 mb-2">Recording Mode</h2>
+                <div className="text-sm text-gray-600 space-y-2">
+                  <p>
+                    <strong className="text-gray-900">How it works:</strong> Interact with the browser window to record your test.
+                    Every click, text input, and dropdown selection will be captured automatically with AI-generated Playwright code.
+                  </p>
+                  <ul className="list-disc list-inside space-y-1 ml-2">
+                    <li>Click buttons, links, and elements</li>
+                    <li>Type into input fields (press Tab or click away to capture)</li>
+                    <li>Select dropdown options</li>
+                    <li>Navigate to different pages</li>
+                  </ul>
+                  <p className="text-purple-700 font-medium">
+                    {state?.recordingActive
+                      ? '🔴 Recording in progress - perform actions in the browser window'
+                      : '✓ Recording stopped - review your steps below and click Save Test when ready'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Steps Panel */}
         <div className="bg-white rounded-lg shadow p-6">

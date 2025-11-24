@@ -256,7 +256,7 @@ router.post('/record/start', async (req, res) => {
     const generator = new RecordModeGenerator(recordConfig);
     recordSessions.set(sessionId, generator);
 
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ headless: false });
     await generator.start(browser);
 
     res.json({
