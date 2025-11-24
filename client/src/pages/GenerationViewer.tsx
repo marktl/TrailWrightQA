@@ -847,6 +847,9 @@ export default function GenerationViewer() {
         folder: saveForm.folder.trim() || undefined,
         credentialId: saveForm.credentialId || undefined
       });
+
+      console.log('Save response:', { test, recordMode, returnToDashboard });
+
       setSavedTest(test);
       addCategoryOption(test.folder);
       setState((prev) => (prev ? { ...prev, savedTestId: test.id } : prev));
@@ -858,6 +861,7 @@ export default function GenerationViewer() {
         navigate('/');
       } else if (recordMode) {
         // For record mode, redirect to test workspace after save
+        console.log('Navigating to test workspace:', `/tests/${test.id}`);
         navigate(`/tests/${test.id}`);
       }
     } catch (err) {
@@ -1671,7 +1675,9 @@ export default function GenerationViewer() {
             <p className="text-gray-500 text-sm">No steps recorded yet...</p>
           ) : (
             <div ref={stepsContainerRef} className="space-y-3 max-h-[600px] overflow-y-auto">
-              {(recordMode ? [...steps].reverse() : steps).map((step, index) => (
+              {(recordMode ? [...steps].reverse() : steps).map((step, index) => {
+                if (index === 0) console.log('First step shown:', step.stepNumber, 'recordMode:', recordMode, 'total steps:', steps.length);
+                return (
                 <div
                   key={step.stepNumber}
                   className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition"
@@ -1732,7 +1738,8 @@ export default function GenerationViewer() {
                     {step.playwrightCode}
                   </code>
                 </div>
-              ))}
+              );
+              })}
             </div>
           )}
         </div>
