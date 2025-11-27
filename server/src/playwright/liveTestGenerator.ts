@@ -2116,10 +2116,26 @@ export class LiveTestGenerator extends EventEmitter {
     const filePath = path.join(this.screenshotDir, filename);
 
     try {
+      // Hide toolbar and overlay elements before screenshot
+      await this.page.evaluate(`
+        ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.style.visibility = 'hidden';
+        });
+      `);
+
       const buffer = await this.page.screenshot({
         path: filePath,
         fullPage: this.options.captureMode === 'screenshot'
       });
+
+      // Restore toolbar and overlay elements after screenshot
+      await this.page.evaluate(`
+        ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.style.visibility = 'visible';
+        });
+      `);
 
       const dataUri = `data:image/png;base64,${buffer.toString('base64')}`;
       return {
@@ -2135,6 +2151,15 @@ export class LiveTestGenerator extends EventEmitter {
         `[generator] Failed to capture screenshot for session ${this.sessionId} step ${stepNumber}`,
         error
       );
+      // Try to restore visibility even on error
+      try {
+        await this.page.evaluate(`
+          ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.visibility = 'visible';
+          });
+        `);
+      } catch {}
       return undefined;
     }
   }
@@ -2153,10 +2178,26 @@ export class LiveTestGenerator extends EventEmitter {
     const filePath = path.join(this.screenshotDir, filename);
 
     try {
+      // Hide toolbar and overlay elements before screenshot
+      await this.page.evaluate(`
+        ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.style.visibility = 'hidden';
+        });
+      `);
+
       const buffer = await this.page.screenshot({
         path: filePath,
         fullPage: true // Always full page for failure analysis
       });
+
+      // Restore toolbar and overlay elements after screenshot
+      await this.page.evaluate(`
+        ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.style.visibility = 'visible';
+        });
+      `);
 
       return buffer.toString('base64');
     } catch (error) {
@@ -2164,6 +2205,15 @@ export class LiveTestGenerator extends EventEmitter {
         `[generator] Failed to capture failure screenshot for session ${this.sessionId} step ${stepNumber} retry ${retryNumber}`,
         error
       );
+      // Try to restore visibility even on error
+      try {
+        await this.page.evaluate(`
+          ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.visibility = 'visible';
+          });
+        `);
+      } catch {}
       return undefined;
     }
   }

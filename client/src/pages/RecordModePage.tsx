@@ -1,11 +1,9 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 import { RecordModeSetup } from '../components/RecordModeSetup';
 import { GenerationViewer } from '../components/GenerationViewer';
 
 export function RecordModePage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const navigate = useNavigate();
 
   const handleStart = async (config: {
     name: string;

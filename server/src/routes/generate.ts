@@ -308,6 +308,34 @@ router.post('/:sessionId/record/stop', async (req, res) => {
   }
 });
 
+// Discard a record mode session (exit without saving)
+router.post('/:sessionId/record/discard', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const generator = recordSessions.get(sessionId);
+
+    if (!generator) {
+      return res.status(404).json({
+        error: 'Recording session not found'
+      });
+    }
+
+    await generator.discard();
+
+    // Remove from active sessions and cache
+    recordSessions.delete(sessionId);
+    recordedStepsCache.delete(sessionId);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Failed to discard recording:', error);
+    res.status(500).json({
+      error: 'Failed to discard recording',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 /**
  * Get current state of a generation session
  */
@@ -363,12 +391,19 @@ router.get('/:sessionId/events', (req, res) => {
       res.write(`data: ${JSON.stringify(state)}\n\n`);
     };
 
+    // Forward LiveGenerationEvent-style events (like step_deleted) as unnamed SSE events
+    const eventHandler = (event: any) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
     recordGenerator.on('step', stepHandler);
     recordGenerator.on('stateChange', stateHandler);
+    recordGenerator.on('event', eventHandler);
 
     req.on('close', () => {
       recordGenerator.off('step', stepHandler);
       recordGenerator.off('stateChange', stateHandler);
+      recordGenerator.off('event', eventHandler);
     });
     return;
   }
@@ -987,13 +1022,21 @@ router.delete('/:sessionId/steps/:stepNumber', async (req, res) => {
 
       recordGenerator.deleteStep(parsedStep);
 
+      const updatedSteps = recordGenerator.getSteps();
+      const updatedState = recordGenerator.getState();
+
       // Update cache as well
       recordedStepsCache.set(sessionId, {
-        steps: recordGenerator.getSteps(),
-        state: recordGenerator.getState()
+        steps: updatedSteps,
+        state: updatedState
       });
 
-      return res.json({ success: true });
+      return res.json({
+        success: true,
+        deletedStepNumber: parsedStep,
+        steps: updatedSteps,
+        state: updatedState
+      });
     } catch (error: any) {
       console.error('Failed to delete step:', error);
       return res.status(error.message === 'Step not found' ? 404 : 500).json({
@@ -1006,7 +1049,8 @@ router.delete('/:sessionId/steps/:stepNumber', async (req, res) => {
   const cached = recordedStepsCache.get(sessionId);
   if (cached) {
     try {
-      const stepIndex = cached.steps.findIndex(s => s.stepNumber === parseInt(stepNumber));
+      const parsedStep = parseInt(stepNumber, 10);
+      const stepIndex = cached.steps.findIndex(s => s.stepNumber === parsedStep);
 
       if (stepIndex === -1) {
         return res.status(404).json({ error: 'Step not found' });
@@ -1015,7 +1059,21 @@ router.delete('/:sessionId/steps/:stepNumber', async (req, res) => {
       // Remove the step from cache
       cached.steps.splice(stepIndex, 1);
 
-      return res.json({ success: true });
+      // Renumber remaining steps
+      cached.steps.forEach((step, index) => {
+        step.stepNumber = index + 1;
+      });
+
+      // Update state to reflect new step count
+      cached.state.stepsTaken = cached.steps.length;
+      cached.state.recordedSteps = [...cached.steps];
+
+      return res.json({
+        success: true,
+        deletedStepNumber: parsedStep,
+        steps: cached.steps,
+        state: cached.state
+      });
     } catch (error) {
       console.error('Failed to delete cached step:', error);
       return res.status(500).json({ error: 'Failed to delete step' });

@@ -8,6 +8,7 @@ import type {
   LiveGenerationOptions,
   LiveGenerationState,
   LiveGenerationEvent,
+  RecordedStep,
   VariableDefinition,
   VariableRow
 } from '../../../shared/types';
@@ -347,7 +348,12 @@ export const api = {
       method: 'POST'
     }),
   deleteGenerationStep: (sessionId: string, stepNumber: number) =>
-    fetchApi<{ success: boolean; state: LiveGenerationState }>(
+    fetchApi<{
+      success: boolean;
+      state?: LiveGenerationState;
+      steps?: RecordedStep[];
+      deletedStepNumber?: number;
+    }>(
       `/generate/${sessionId}/steps/${stepNumber}`,
       {
         method: 'DELETE'

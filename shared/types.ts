@@ -262,6 +262,7 @@ export type LiveGenerationEventType =
   | 'ai_thinking'
   | 'step_recorded'
   | 'step_deleted'
+  | 'discarded'
   | 'page_changed'
   | 'chat'
   | 'plan_ready'

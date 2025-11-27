@@ -21,6 +21,7 @@ export default function GenerationViewer() {
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isStopping, setIsStopping] = useState(false);
+  const [isDiscarding, setIsDiscarding] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isInterrupting, setIsInterrupting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -209,14 +210,19 @@ export default function GenerationViewer() {
         break;
 
       case 'step_deleted':
+        console.log('SSE step_deleted event received:', event.payload);
         if (typeof event.payload?.deletedStepNumber !== 'number') {
+          console.log('SSE step_deleted: invalid payload, skipping');
           break;
         }
-        setSteps((prev) =>
-          prev
+        console.log('SSE step_deleted: updating steps via SSE handler');
+        setSteps((prev) => {
+          const filtered = prev
             .filter((step) => step.stepNumber !== event.payload.deletedStepNumber)
-            .map((step, index) => ({ ...step, stepNumber: index + 1 }))
-        );
+            .map((step, index) => ({ ...step, stepNumber: index + 1 }));
+          console.log('SSE step_deleted: steps after filter/renumber:', filtered.length);
+          return filtered;
+        });
         setState((prev) => {
           if (!prev) {
             return prev;
@@ -232,6 +238,11 @@ export default function GenerationViewer() {
             recordedSteps: updatedRecordedSteps
           };
         });
+        break;
+
+      case 'discarded':
+        // Recording was discarded - navigate to landing page
+        navigate('/');
         break;
 
       case 'page_changed':
@@ -404,7 +415,20 @@ export default function GenerationViewer() {
 
     setDeletingStepNumber(stepNumber);
     try {
-      await api.deleteGenerationStep(sessionId, stepNumber);
+      const response = await api.deleteGenerationStep(sessionId, stepNumber);
+      console.log('Delete response:', response);
+      console.log('response.steps:', response.steps);
+      console.log('response.state:', response.state);
+
+      // For cached sessions (recording stopped), handle response directly
+      // since no SSE event will be emitted
+      if (response.steps && response.state) {
+        console.log('Updating steps and state from response');
+        setSteps(response.steps);
+        setState(response.state);
+      } else {
+        console.log('Response missing steps or state, relying on SSE event');
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete step';
       setError(message);
@@ -537,6 +561,28 @@ export default function GenerationViewer() {
       setError(message);
     } finally {
       setIsStopping(false);
+    }
+  }
+
+  async function handleDiscardRecording() {
+    if (!sessionId || isDiscarding) return;
+
+    const confirmed = window.confirm(
+      'Are you sure you want to exit without saving?\n\nAll recorded steps will be lost. This cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    setIsDiscarding(true);
+    try {
+      await fetch(`/api/generate/${sessionId}/record/discard`, {
+        method: 'POST',
+      });
+      // Navigate to landing page after successful discard
+      navigate('/');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to discard recording';
+      setError(message);
+      setIsDiscarding(false);
     }
   }
 
@@ -1238,6 +1284,16 @@ export default function GenerationViewer() {
                   {isSaving ? 'Saving…' : 'Save Test'}
                 </button>
               )}
+              {recordMode && (
+                <button
+                  onClick={handleDiscardRecording}
+                  disabled={isDiscarding}
+                  className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 disabled:opacity-50"
+                  title="Exit without saving"
+                >
+                  {isDiscarding ? 'Exiting…' : 'Exit Without Saving'}
+                </button>
+              )}
             </div>
           </div>
 
@@ -1680,7 +1736,7 @@ export default function GenerationViewer() {
                 return (
                 <div
                   key={step.stepNumber}
-                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition"
+                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition overflow-hidden"
                 >
                   <div className="flex items-start justify-between mb-2">
                     <span className="text-sm font-medium text-gray-900">

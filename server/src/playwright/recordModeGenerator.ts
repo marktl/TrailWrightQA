@@ -103,13 +103,26 @@ export class RecordModeGenerator extends EventEmitter {
 
     // Use string template for browser code to avoid TypeScript DOM errors
     const eventListenerScript = `
+      // Only add listeners in top-level frame, not iframes
+      if (window !== window.top) {
+        return;
+      }
+
+      // Helper to check if element is part of TrailWright UI
+      function isTrailWrightElement(el) {
+        return el && (
+          el.closest('#trailwright-recorder-toolbar') ||
+          el.closest('#tw-assertion-modal') ||
+          el.closest('#tw-modal-backdrop') ||
+          el.closest('#trailwright-element-picker-overlay')
+        );
+      }
+
       document.addEventListener('click', (e) => {
         const target = e.target;
 
         // Ignore clicks on TrailWright toolbar and modal elements
-        if (target.closest('#trailwright-recorder-toolbar') ||
-            target.closest('#tw-assertion-modal') ||
-            target.closest('#tw-modal-backdrop')) {
+        if (isTrailWrightElement(target)) {
           return;
         }
 
@@ -130,6 +143,8 @@ export class RecordModeGenerator extends EventEmitter {
 
       document.addEventListener('input', (e) => {
         const target = e.target;
+        // Ignore inputs in TrailWright UI elements
+        if (isTrailWrightElement(target)) return;
         if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) {
           window.__twRecordInput && window.__twRecordInput({
             tagName: target.tagName,
@@ -144,6 +159,8 @@ export class RecordModeGenerator extends EventEmitter {
 
       document.addEventListener('blur', (e) => {
         const target = e.target;
+        // Ignore blur in TrailWright UI elements
+        if (isTrailWrightElement(target)) return;
         if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) {
           window.__twRecordBlur && window.__twRecordBlur({
             tagName: target.tagName,
@@ -435,10 +452,27 @@ export class RecordModeGenerator extends EventEmitter {
     }
 
     try {
+      // Hide toolbar and overlay elements before screenshot
+      await (this.page as any).evaluate(`
+        ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.style.visibility = 'hidden';
+        });
+      `);
+
       const screenshotBuffer = await (this.page as any).screenshot({
         type: 'jpeg',
         quality: 80
       });
+
+      // Restore toolbar and overlay elements after screenshot
+      await (this.page as any).evaluate(`
+        ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.style.visibility = 'visible';
+        });
+      `);
+
       if (!screenshotBuffer) {
         return undefined;
       }
@@ -447,6 +481,15 @@ export class RecordModeGenerator extends EventEmitter {
       return `data:image/jpeg;base64,${buffer.toString('base64')}`;
     } catch (error) {
       console.error('Failed to capture screenshot:', error);
+      // Try to restore visibility even on error
+      try {
+        await (this.page as any).evaluate(`
+          ['trailwright-recorder-toolbar', 'tw-assertion-modal', 'tw-modal-backdrop', 'trailwright-element-picker-overlay'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.visibility = 'visible';
+          });
+        `);
+      } catch {}
       return undefined;
     }
   }
@@ -472,6 +515,11 @@ export class RecordModeGenerator extends EventEmitter {
 
     // Inject toolbar using string template to avoid TypeScript DOM errors
     const toolbarInjectionScript = `
+      // Only inject in top-level frame, not iframes
+      if (window !== window.top) {
+        console.log('[TrailWright] Skipping toolbar injection in iframe');
+        return;
+      }
       console.log('[TrailWright] Init script running, readyState:', document.readyState);
       function injectToolbar() {
         console.log('[TrailWright] Injecting toolbar...');
@@ -744,6 +792,21 @@ ${testSteps}
     }
   }
 
+  async discard(): Promise<void> {
+    this.state.status = 'stopped';
+    this.state.recordingActive = false;
+    this.state.updatedAt = new Date().toISOString();
+
+    // Emit discarded event before cleanup
+    this.emit('event', {
+      type: 'discarded',
+      timestamp: new Date().toISOString(),
+      payload: {}
+    });
+
+    await this.cleanup();
+  }
+
   getState(): LiveGenerationState {
     return { ...this.state, recordedSteps: [...this.recordedSteps] };
   }
@@ -759,10 +822,23 @@ ${testSteps}
       throw new Error('Step not found');
     }
     this.recordedSteps.splice(stepIndex, 1);
+
+    // Renumber remaining steps
+    this.recordedSteps.forEach((step, index) => {
+      step.stepNumber = index + 1;
+    });
+
     this.state.recordedSteps = [...this.recordedSteps];
     this.state.steps = [...this.recordedSteps];
     this.state.stepsTaken = this.recordedSteps.length;
     this.state.updatedAt = new Date().toISOString();
+
+    // Emit step_deleted event for SSE clients
+    this.emit('event', {
+      type: 'step_deleted',
+      timestamp: new Date().toISOString(),
+      payload: { deletedStepNumber: stepNumber }
+    });
     this.emit('stateChange', this.getState());
   }
 

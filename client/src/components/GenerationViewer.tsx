@@ -17,6 +17,7 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
   const [newVarName, setNewVarName] = useState('');
   const [newVarValue, setNewVarValue] = useState('');
   const [activeField, setActiveField] = useState<'summary' | 'code' | null>(null);
+  const [isDiscarding, setIsDiscarding] = useState(false);
 
   const summaryInputRef = useRef<HTMLInputElement>(null);
   const codeInputRef = useRef<HTMLTextAreaElement>(null);
@@ -115,6 +116,27 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
     } catch (error) {
       console.error('Failed to save:', error);
       alert('Failed to save test');
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (isDiscarding) return;
+
+    const confirmed = window.confirm(
+      'Are you sure you want to exit without saving?\n\nAll recorded steps will be lost. This cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    setIsDiscarding(true);
+    try {
+      await fetch(`/api/generate/${sessionId}/record/discard`, {
+        method: 'POST',
+      });
+      window.location.href = '/';
+    } catch (error) {
+      console.error('Failed to discard:', error);
+      alert('Failed to discard recording');
+      setIsDiscarding(false);
     }
   };
 
@@ -421,7 +443,7 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
         ))}
       </div>
 
-      {isRecordMode && !state.recordingActive && steps.length > 0 && (
+      {isRecordMode && !state.recordingActive && (
         <div className="border-t p-4 bg-white flex gap-3">
           <button
             onClick={handleResume}
@@ -429,11 +451,21 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
           >
             Resume Recording
           </button>
+          {steps.length > 0 && (
+            <button
+              onClick={handleSave}
+              className="flex-1 py-3 bg-green-600 text-white rounded-md hover:bg-green-700"
+            >
+              Save Test
+            </button>
+          )}
           <button
-            onClick={handleSave}
-            className="flex-1 py-3 bg-green-600 text-white rounded-md hover:bg-green-700"
+            onClick={handleDiscard}
+            disabled={isDiscarding}
+            className="py-3 px-4 bg-gray-500 text-white rounded-md hover:bg-gray-600 disabled:opacity-50"
+            title="Exit without saving"
           >
-            Save Test
+            {isDiscarding ? 'Exiting…' : 'Exit'}
           </button>
         </div>
       )}

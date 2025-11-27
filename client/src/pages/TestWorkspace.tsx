@@ -39,7 +39,7 @@ const statusStyles: Record<RunStatus, string> = {
   failed: 'bg-red-100 text-red-700'
 };
 
-const stepStatusStyles = {
+const _stepStatusStyles = {
   pending: 'border-blue-200 bg-blue-50',
   passed: 'border-emerald-200 bg-emerald-50',
   failed: 'border-red-200 bg-red-50'
@@ -155,7 +155,7 @@ export default function TestWorkspace() {
   const [runState, setRunState] = useState<LiveRunState | null>(null);
   const [pendingAction, setPendingAction] = useState<RunControlAction | null>(null);
   const [chatInput, setChatInput] = useState('');
-  const [sendingChat, setSendingChat] = useState(false);
+  const [_sendingChat, _setSendingChat] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const logsRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -561,7 +561,7 @@ export default function TestWorkspace() {
     }
   }
 
-  async function handleSendChat(event: FormEvent) {
+  async function _handleSendChat(event: FormEvent) {
     event.preventDefault();
     if (!activeRunId) {
       setError('Start or select a run before chatting with the assistant.');
@@ -571,7 +571,7 @@ export default function TestWorkspace() {
     if (!trimmed) return;
 
     try {
-      setSendingChat(true);
+      _setSendingChat(true);
       setError(null);
       const response = await api.sendRunChat(activeRunId, trimmed);
       setChatInput('');
@@ -590,7 +590,7 @@ export default function TestWorkspace() {
           : 'Failed to send message to AI assistant.';
       setError(message);
     } finally {
-      setSendingChat(false);
+      _setSendingChat(false);
     }
   }
 
@@ -775,7 +775,7 @@ export default function TestWorkspace() {
   }
 
   const logItems = useMemo(() => runState?.logs ?? [], [runState?.logs]);
-  const chatItems = useMemo(() => runState?.chat ?? [], [runState?.chat]);
+  const _chatItems = useMemo(() => runState?.chat ?? [], [runState?.chat]);
   const stepsForDisplay = useMemo(() => {
     if (runState?.steps && runState.steps.length > 0) {
       return runState.steps;
@@ -1252,11 +1252,11 @@ export default function TestWorkspace() {
                   </div>
 
                   {/* System Logs (Collapsible) */}
-                  <div className="border-t pt-4">
+                  <div className="border-t border-gray-300 pt-4 mt-4">
                     <button
                       type="button"
                       onClick={() => setLogsExpanded((prev) => !prev)}
-                      className="flex w-full items-center justify-between"
+                      className="flex w-full items-center justify-between rounded-lg bg-gray-100 px-3 py-2 hover:bg-gray-200"
                     >
                       <div>
                         <h3 className="text-sm font-semibold text-gray-900">System Logs</h3>

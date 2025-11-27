@@ -219,7 +219,8 @@ export default function RunSession() {
 
   const logItems = useMemo(() => run?.logs ?? [], [run?.logs]);
   const chatItems = useMemo(() => run?.chat ?? [], [run?.chat]);
-  const scriptedSteps = useMemo(
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _scriptedSteps = useMemo(
     () => (testMetadata?.steps ? [...testMetadata.steps].sort((a, b) => a.number - b.number) : []),
     [testMetadata?.steps]
   );
