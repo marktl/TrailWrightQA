@@ -194,13 +194,14 @@ export class LiveRunSession {
       : {};
 
     const stepsSnapshot = [...this.steps];
+    const logsSnapshot = [...this.logs];
 
     try {
       const result = await finalizeRunExecution(
         this.context,
         code,
         this.stderrAggregate,
-        { ...options, steps: stepsSnapshot }
+        { ...options, steps: stepsSnapshot, logs: logsSnapshot }
       );
       this.result = result;
       this.process = null;

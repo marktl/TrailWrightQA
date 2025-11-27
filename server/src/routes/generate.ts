@@ -25,6 +25,9 @@ const sessions = new Map<string, LiveTestGenerator>();
 const persistedSessions = new Map<string, TestMetadata>();
 const recordSessions = new Map<string, RecordModeGenerator>();
 
+// Cache for recorded steps (persists even after browser closes)
+const recordedStepsCache = new Map<string, { steps: any[], state: any }>();
+
 // SSE connections for real-time updates
 const sseClients = new Map<string, express.Response[]>();
 
@@ -286,6 +289,12 @@ router.post('/:sessionId/record/stop', async (req, res) => {
 
     await generator.stop();
 
+    // Cache the steps and state so they persist even after browser closes
+    recordedStepsCache.set(sessionId, {
+      steps: generator.getSteps(),
+      state: generator.getState()
+    });
+
     res.json({
       state: generator.getState(),
       recordedSteps: generator.getSteps()
@@ -308,6 +317,13 @@ router.get('/:sessionId/state', (req, res) => {
   if (recordGenerator) {
     return res.json(recordGenerator.getState());
   }
+
+  // Check cache for stopped record sessions
+  const cached = recordedStepsCache.get(sessionId);
+  if (cached) {
+    return res.json(cached.state);
+  }
+
   const generator = sessions.get(sessionId);
 
   if (!generator) {
@@ -354,6 +370,27 @@ router.get('/:sessionId/events', (req, res) => {
       recordGenerator.off('step', stepHandler);
       recordGenerator.off('stateChange', stateHandler);
     });
+    return;
+  }
+
+  // Check cache for stopped record sessions (browser closed)
+  const cached = recordedStepsCache.get(sessionId);
+  if (cached) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Send cached state and steps, then close
+    res.write('event: state\n');
+    res.write(`data: ${JSON.stringify(cached.state)}\n\n`);
+
+    // Send all cached steps
+    for (const step of cached.steps) {
+      res.write('event: step\n');
+      res.write(`data: ${JSON.stringify(step)}\n\n`);
+    }
+
+    res.end();
     return;
   }
 
@@ -698,6 +735,14 @@ router.patch('/:sessionId/keep-browser-open', (req, res) => {
  */
 router.get('/:sessionId/variables', (req, res) => {
   const { sessionId } = req.params;
+
+  // Check record mode sessions first
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    const variables = recordGenerator.getVariables();
+    return res.json({ variables });
+  }
+
   const generator = sessions.get(sessionId);
 
   if (!generator) {
@@ -714,15 +759,6 @@ router.get('/:sessionId/variables', (req, res) => {
 router.post('/:sessionId/variables', (req, res) => {
   const { sessionId } = req.params;
   const { name, sampleValue, type } = req.body ?? {};
-  const generator = sessions.get(sessionId);
-
-  if (!generator) {
-    return res.status(404).json({ error: 'Session not found' });
-  }
-
-  if (!generator.isManualMode()) {
-    return res.status(400).json({ error: 'Variables are only supported in step-by-step mode' });
-  }
 
   if (!name || typeof name !== 'string') {
     return res.status(400).json({ error: 'Variable name is required' });
@@ -733,6 +769,27 @@ router.post('/:sessionId/variables', (req, res) => {
   }
 
   const varType = type === 'number' ? 'number' : 'string';
+
+  // Check record mode sessions first
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    try {
+      recordGenerator.setVariable(name, sampleValue, varType);
+      return res.json({ success: true, variables: recordGenerator.getVariables() });
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message || 'Unable to set variable' });
+    }
+  }
+
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  if (!generator.isManualMode()) {
+    return res.status(400).json({ error: 'Variables are only supported in step-by-step mode' });
+  }
 
   try {
     generator.setVariable(name, sampleValue, varType);
@@ -747,6 +804,14 @@ router.post('/:sessionId/variables', (req, res) => {
  */
 router.delete('/:sessionId/variables/:varName', (req, res) => {
   const { sessionId, varName } = req.params;
+
+  // Check record mode sessions first
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    recordGenerator.removeVariable(varName);
+    return res.json({ success: true, variables: recordGenerator.getVariables() });
+  }
+
   const generator = sessions.get(sessionId);
 
   if (!generator) {
@@ -779,26 +844,7 @@ router.post('/:sessionId/chat', async (req, res) => {
   }
 });
 
-router.delete('/:sessionId/steps/:stepNumber', async (req, res) => {
-  const { sessionId, stepNumber } = req.params;
-  const generator = sessions.get(sessionId);
-
-  if (!generator) {
-    return res.status(404).json({ error: 'Session not found' });
-  }
-
-  try {
-    const parsedStep = Number.parseInt(stepNumber, 10);
-    if (Number.isNaN(parsedStep)) {
-      return res.status(400).json({ error: 'Invalid step number' });
-    }
-
-    await generator.deleteStep(parsedStep);
-    res.json({ success: true, state: generator.getState() });
-  } catch (error: any) {
-    res.status(400).json({ error: error.message || 'Unable to delete step' });
-  }
-});
+// Note: DELETE steps route moved below to consolidate with record mode handling
 
 router.post('/:sessionId/suggest-name', async (req, res) => {
   const { sessionId } = req.params;
@@ -833,6 +879,169 @@ router.post('/:sessionId/suggest-tags', async (req, res) => {
 });
 
 /**
+ * Resume a paused recording
+ */
+router.post('/:sessionId/resume', async (req, res) => {
+  const { sessionId } = req.params;
+
+  const recordGenerator = recordSessions.get(sessionId);
+  if (!recordGenerator) {
+    // Check if session is in cache (browser was closed)
+    const cached = recordedStepsCache.get(sessionId);
+    if (cached) {
+      return res.status(400).json({
+        error: 'Cannot resume - browser window was closed. Please start a new recording.'
+      });
+    }
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    await recordGenerator.resume();
+    return res.json({ success: true, state: recordGenerator.getState() });
+  } catch (error) {
+    console.error('Failed to resume recording:', error);
+    return res.status(500).json({ error: 'Failed to resume recording' });
+  }
+});
+
+/**
+ * Update a specific step in the recording
+ */
+router.put('/:sessionId/steps/:stepNumber', async (req, res) => {
+  const { sessionId, stepNumber } = req.params;
+  const { qaSummary, playwrightCode } = req.body;
+
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    try {
+      const parsedStep = Number.parseInt(stepNumber, 10);
+      if (Number.isNaN(parsedStep)) {
+        return res.status(400).json({ error: 'Invalid step number' });
+      }
+
+      recordGenerator.updateStep(parsedStep, { qaSummary, playwrightCode });
+
+      // Update cache as well
+      const steps = recordGenerator.getSteps();
+      recordedStepsCache.set(sessionId, {
+        steps: steps,
+        state: recordGenerator.getState()
+      });
+
+      const updatedStep = steps.find(s => s.stepNumber === parsedStep);
+      return res.json({ success: true, step: updatedStep });
+    } catch (error: any) {
+      console.error('Failed to update step:', error);
+      return res.status(error.message === 'Step not found' ? 404 : 500).json({
+        error: error.message || 'Failed to update step'
+      });
+    }
+  }
+
+  // Check cache for stopped record sessions (browser closed)
+  const cached = recordedStepsCache.get(sessionId);
+  if (cached) {
+    try {
+      const stepIndex = cached.steps.findIndex(s => s.stepNumber === parseInt(stepNumber));
+
+      if (stepIndex === -1) {
+        return res.status(404).json({ error: 'Step not found' });
+      }
+
+      // Update the cached step
+      cached.steps[stepIndex] = {
+        ...cached.steps[stepIndex],
+        qaSummary: qaSummary || cached.steps[stepIndex].qaSummary,
+        playwrightCode: playwrightCode || cached.steps[stepIndex].playwrightCode
+      };
+
+      return res.json({ success: true, step: cached.steps[stepIndex] });
+    } catch (error) {
+      console.error('Failed to update cached step:', error);
+      return res.status(500).json({ error: 'Failed to update step' });
+    }
+  }
+
+  const generator = sessions.get(sessionId);
+  if (generator) {
+    return res.status(400).json({ error: 'Step editing not supported for AI-driven sessions' });
+  }
+
+  return res.status(404).json({ error: 'Session not found' });
+});
+
+/**
+ * Delete a specific step in the recording
+ */
+router.delete('/:sessionId/steps/:stepNumber', async (req, res) => {
+  const { sessionId, stepNumber } = req.params;
+
+  const recordGenerator = recordSessions.get(sessionId);
+  if (recordGenerator) {
+    try {
+      const parsedStep = Number.parseInt(stepNumber, 10);
+      if (Number.isNaN(parsedStep)) {
+        return res.status(400).json({ error: 'Invalid step number' });
+      }
+
+      recordGenerator.deleteStep(parsedStep);
+
+      // Update cache as well
+      recordedStepsCache.set(sessionId, {
+        steps: recordGenerator.getSteps(),
+        state: recordGenerator.getState()
+      });
+
+      return res.json({ success: true });
+    } catch (error: any) {
+      console.error('Failed to delete step:', error);
+      return res.status(error.message === 'Step not found' ? 404 : 500).json({
+        error: error.message || 'Failed to delete step'
+      });
+    }
+  }
+
+  // Check cache for stopped record sessions (browser closed)
+  const cached = recordedStepsCache.get(sessionId);
+  if (cached) {
+    try {
+      const stepIndex = cached.steps.findIndex(s => s.stepNumber === parseInt(stepNumber));
+
+      if (stepIndex === -1) {
+        return res.status(404).json({ error: 'Step not found' });
+      }
+
+      // Remove the step from cache
+      cached.steps.splice(stepIndex, 1);
+
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('Failed to delete cached step:', error);
+      return res.status(500).json({ error: 'Failed to delete step' });
+    }
+  }
+
+  // Check live test generator sessions (step-by-step mode)
+  const generator = sessions.get(sessionId);
+  if (generator) {
+    try {
+      const parsedStep = Number.parseInt(stepNumber, 10);
+      if (Number.isNaN(parsedStep)) {
+        return res.status(400).json({ error: 'Invalid step number' });
+      }
+
+      await generator.deleteStep(parsedStep);
+      return res.json({ success: true, state: generator.getState() });
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message || 'Unable to delete step' });
+    }
+  }
+
+  return res.status(404).json({ error: 'Session not found' });
+});
+
+/**
  * Save the generated test
  */
 router.post('/:sessionId/save', async (req, res) => {
@@ -842,14 +1051,6 @@ router.post('/:sessionId/save', async (req, res) => {
   const recordGenerator = recordSessions.get(sessionId);
   if (recordGenerator) {
     try {
-      const testsDir = path.join(CONFIG.DATA_DIR, 'tests');
-      await fs.mkdir(testsDir, { recursive: true });
-
-      const testCode = await recordGenerator.generateTestFile();
-      const testPath = path.join(testsDir, `${sessionId}.spec.ts`);
-
-      await fs.writeFile(testPath, testCode, 'utf-8');
-
       const state = recordGenerator.getState();
       const steps = recordGenerator.getSteps();
 
@@ -871,8 +1072,39 @@ router.post('/:sessionId/save', async (req, res) => {
         }))
       };
 
+      // Generate test code (without metadata comment)
+      const testSteps = steps
+        .map((step, index) => {
+          // Strip newlines from qaSummary to avoid breaking single-line comments
+          const sanitizedSummary = step.qaSummary.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+          const comment = `  // Step ${step.stepNumber}: ${sanitizedSummary}`;
+          const code = `  ${step.playwrightCode}`;
+          const wait = step.waitCode ? `  ${step.waitCode}` : '';
+          // Add 500ms wait between steps (except after the last step)
+          const defaultWait = index < steps.length - 1 ? '  await page.waitForTimeout(500);' : '';
+          return [comment, code, wait, defaultWait].filter(Boolean).join('\n');
+        })
+        .join('\n\n');
+
+      // Add initial navigation to startUrl
+      const initialNav = `  // Navigate to starting URL\n  await page.goto('${metadata.startUrl}');\n`;
+
+      const testCode = `import { test, expect } from '@playwright/test';
+
+test('${metadata.name}', async ({ page }) => {
+${initialNav}
+${testSteps}
+});`;
+
+      // Use saveTest from storage layer to write file with proper metadata
+      await saveTest(CONFIG.DATA_DIR, {
+        metadata,
+        code: testCode
+      });
+
       await recordGenerator.cleanup();
       recordSessions.delete(sessionId);
+      recordedStepsCache.delete(sessionId); // Clear cache after saving
 
       return res.json({
         success: true,
@@ -880,6 +1112,73 @@ router.post('/:sessionId/save', async (req, res) => {
       });
     } catch (error) {
       console.error('Failed to save test:', error);
+      return res.status(500).json({ error: 'Failed to save test' });
+    }
+  }
+
+  // Check cache for stopped record sessions (browser closed)
+  const cached = recordedStepsCache.get(sessionId);
+  if (cached) {
+    try {
+      const state = cached.state;
+      const steps = cached.steps;
+
+      // Create test metadata matching the expected structure
+      const metadata: TestMetadata = {
+        id: sessionId,
+        name: name || state.testName || 'Recorded Test',
+        description: description || state.goal || undefined,
+        tags: tags || ['ai-generated', 'record-mode'],
+        folder: folder || undefined,
+        credentialId: credentialId || undefined,
+        startUrl: state.startUrl,
+        createdAt: state.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        steps: steps.map(step => ({
+          number: step.stepNumber,
+          qaSummary: step.qaSummary,
+          playwrightCode: step.playwrightCode
+        }))
+      };
+
+      // Generate test code (without metadata comment)
+      const testSteps = steps
+        .map((step, index) => {
+          // Strip newlines from qaSummary to avoid breaking single-line comments
+          const sanitizedSummary = step.qaSummary.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+          const comment = `  // Step ${step.stepNumber}: ${sanitizedSummary}`;
+          const code = `  ${step.playwrightCode}`;
+          const wait = step.waitCode ? `  ${step.waitCode}` : '';
+          // Add 500ms wait between steps (except after the last step)
+          const defaultWait = index < steps.length - 1 ? '  await page.waitForTimeout(500);' : '';
+          return [comment, code, wait, defaultWait].filter(Boolean).join('\n');
+        })
+        .join('\n\n');
+
+      // Add initial navigation to startUrl
+      const initialNav = `  // Navigate to starting URL\n  await page.goto('${metadata.startUrl}');\n`;
+
+      const testCode = `import { test, expect } from '@playwright/test';
+
+test('${metadata.name}', async ({ page }) => {
+${initialNav}
+${testSteps}
+});`;
+
+      // Use saveTest from storage layer to write file with proper metadata
+      await saveTest(CONFIG.DATA_DIR, {
+        metadata,
+        code: testCode
+      });
+
+      recordedStepsCache.delete(sessionId); // Clear cache after saving
+
+      return res.json({
+        success: true,
+        test: metadata
+      });
+    } catch (error) {
+      console.error('Failed to save test from cache:', error);
       return res.status(500).json({ error: 'Failed to save test' });
     }
   }

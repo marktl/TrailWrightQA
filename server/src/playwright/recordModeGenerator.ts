@@ -2,7 +2,7 @@ import type { Browser, Page } from 'playwright';
 import { EventEmitter } from 'events';
 import type { LiveGenerationState, RecordedStep } from '../../../shared/types.js';
 import { generateCodeFromInteraction } from '../ai/recordModePrompts.js';
-import { TOOLBAR_HTML, TOOLBAR_LISTENER_SCRIPT, getToolbarUpdateScript } from './toolbarInjection.js';
+import { TOOLBAR_HTML, TOOLBAR_LISTENER_SCRIPT, getToolbarUpdateScript, getAssertionModeScript, getShowAssertionModalScript, getHideAssertionModalScript } from './toolbarInjection.js';
 
 export interface RecordModeConfig {
   sessionId: string;
@@ -11,6 +11,19 @@ export interface RecordModeConfig {
   description?: string;
   aiProvider: 'anthropic' | 'openai' | 'gemini';
   credentialId?: string;
+}
+
+interface Variable {
+  name: string;
+  sampleValue: string;
+  type: 'string' | 'number';
+}
+
+interface PendingAssertion {
+  elementInfo: { role?: string; name?: string; selector: string };
+  elementText: string;
+  url: string;
+  screenshotData?: string;
 }
 
 export class RecordModeGenerator extends EventEmitter {
@@ -23,6 +36,8 @@ export class RecordModeGenerator extends EventEmitter {
   private stepCounter = 0;
   private activeInputs = new Map<string, { value: string; startTime: number; element: any }>();
   private initialNavigationDone = false;
+  private variables: Variable[] = [];
+  private pendingAssertion?: PendingAssertion;
 
   constructor(config: RecordModeConfig) {
     super();
@@ -86,35 +101,37 @@ export class RecordModeGenerator extends EventEmitter {
       await this.handleChangeEvent(data);
     });
 
-    await (this.page as any).addInitScript(() => {
+    // Use string template for browser code to avoid TypeScript DOM errors
+    const eventListenerScript = `
       document.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
+        const target = e.target;
 
-        // Ignore clicks on SELECT and OPTION elements - we handle those via 'change' event
-        if (target.tagName === 'SELECT' || target.tagName === 'OPTION') {
+        // Ignore clicks on TrailWright toolbar and modal elements
+        if (target.closest('#trailwright-recorder-toolbar') ||
+            target.closest('#tw-assertion-modal') ||
+            target.closest('#tw-modal-backdrop')) {
           return;
         }
 
-        // Also ignore clicks inside SELECT elements (propagated from OPTIONs)
+        if (target.tagName === 'SELECT' || target.tagName === 'OPTION') return;
         const parentSelect = target.closest('select');
-        if (parentSelect) {
-          return;
-        }
+        if (parentSelect) return;
 
-        (window as any).__twRecordClick?.({
+        window.__twRecordClick && window.__twRecordClick({
           tagName: target.tagName,
+          type: target.type,
           role: target.getAttribute('role'),
           ariaLabel: target.getAttribute('aria-label'),
-          textContent: target.textContent?.trim(),
+          textContent: target.textContent ? target.textContent.trim() : '',
           id: target.id,
           className: target.className
         });
       }, true);
 
       document.addEventListener('input', (e) => {
-        const target = e.target as HTMLInputElement;
+        const target = e.target;
         if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) {
-          (window as any).__twRecordInput?.({
+          window.__twRecordInput && window.__twRecordInput({
             tagName: target.tagName,
             type: target.type,
             value: target.value,
@@ -126,9 +143,9 @@ export class RecordModeGenerator extends EventEmitter {
       }, true);
 
       document.addEventListener('blur', (e) => {
-        const target = e.target as HTMLInputElement;
+        const target = e.target;
         if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) {
-          (window as any).__twRecordBlur?.({
+          window.__twRecordBlur && window.__twRecordBlur({
             tagName: target.tagName,
             type: target.type,
             value: target.value,
@@ -140,9 +157,9 @@ export class RecordModeGenerator extends EventEmitter {
       }, true);
 
       document.addEventListener('change', (e) => {
-        const target = e.target as HTMLSelectElement;
+        const target = e.target;
         if (target.tagName === 'SELECT') {
-          (window as any).__twRecordChange?.({
+          window.__twRecordChange && window.__twRecordChange({
             tagName: target.tagName,
             value: target.value,
             ariaLabel: target.getAttribute('aria-label'),
@@ -151,7 +168,9 @@ export class RecordModeGenerator extends EventEmitter {
           });
         }
       }, true);
-    });
+    `;
+
+    await (this.page as any).addInitScript(eventListenerScript);
 
     (this.page as any).on('framenavigated', async (frame: any) => {
       await this.handleNavigationEvent(frame);
@@ -162,6 +181,23 @@ export class RecordModeGenerator extends EventEmitter {
     const elementInfo = await this.captureElementInfo(data);
     const currentUrl = typeof (this.page as any)?.url === 'function' ? this.page!.url() : '';
     const screenshotData = await this.captureScreenshot();
+
+    // If in assertion mode, show modal to let user choose assertion type
+    if (this.state.assertionPickerActive) {
+      // Store the pending assertion data
+      this.pendingAssertion = {
+        elementInfo,
+        elementText: data?.textContent?.trim() || '',
+        url: currentUrl,
+        screenshotData
+      };
+
+      // Show the assertion type modal
+      const elementName = elementInfo.name || elementInfo.role || 'element';
+      const elementText = data?.textContent?.trim() || '';
+      await this.showAssertionModal(elementName, elementText);
+      return;
+    }
 
     const aiResponse = await generateCodeFromInteraction(
       {
@@ -314,21 +350,76 @@ export class RecordModeGenerator extends EventEmitter {
     name?: string;
     selector: string;
   }> {
-    const role = element?.role;
+    const explicitRole = element?.role;
     const ariaLabel = element?.ariaLabel;
     const textContent = element?.textContent;
-    const name = ariaLabel || textContent || element?.name || '';
+    const elementName = element?.name; // HTML name attribute (for form fields)
+    const elementId = element?.id;
+    const displayName = ariaLabel || textContent || elementName || '';
     const tagName = element?.tagName?.toLowerCase?.() || 'div';
+    const inputType = element?.type?.toLowerCase?.() || '';
 
-    const selector = role && name
-      ? `getByRole('${role}', { name: '${name}' })`
-      : ariaLabel
-        ? `getByLabel('${ariaLabel}')`
-        : `locator('${tagName}')`;
+    // Infer implicit ARIA role from tagName when no explicit role is set
+    let role = explicitRole;
+    if (!role) {
+      const roleMap: Record<string, string> = {
+        'a': 'link',
+        'button': 'button',
+        'select': 'combobox',
+        'textarea': 'textbox',
+        'img': 'img',
+        'nav': 'navigation',
+        'main': 'main',
+        'header': 'banner',
+        'footer': 'contentinfo',
+        'article': 'article',
+        'aside': 'complementary',
+        'section': 'region',
+      };
+      role = roleMap[tagName];
+
+      // Special handling for input types
+      if (tagName === 'input') {
+        const inputRoleMap: Record<string, string> = {
+          'button': 'button',
+          'submit': 'button',
+          'reset': 'button',
+          'checkbox': 'checkbox',
+          'radio': 'radio',
+          'text': 'textbox',
+          'email': 'textbox',
+          'password': 'textbox',
+          'search': 'searchbox',
+          'tel': 'textbox',
+          'url': 'textbox',
+        };
+        role = inputRoleMap[inputType] || 'textbox';
+      }
+    }
+
+    // Generate selector with priority: role+name > label > id > name attr > tagName
+    let selector: string;
+    if (role && displayName) {
+      // Escape single quotes in the name
+      const escapedName = displayName.replace(/'/g, "\\'");
+      selector = `getByRole('${role}', { name: '${escapedName}' })`;
+    } else if (ariaLabel) {
+      const escapedLabel = ariaLabel.replace(/'/g, "\\'");
+      selector = `getByLabel('${escapedLabel}')`;
+    } else if (elementId) {
+      // Use ID selector for unique identification
+      selector = `locator('#${elementId}')`;
+    } else if (elementName) {
+      // Use name attribute selector for form fields
+      selector = `locator('[name="${elementName}"]')`;
+    } else {
+      // Last resort - generic tagName selector
+      selector = `locator('${tagName}')`;
+    }
 
     return {
       role,
-      name,
+      name: displayName,
       selector
     };
   }
@@ -367,23 +458,47 @@ export class RecordModeGenerator extends EventEmitter {
       await this.stop();
     });
 
-    await (this.page as any).addInitScript(
-      (html: string, listenerScript: string) => {
-        window.addEventListener('DOMContentLoaded', () => {
-          const wrapper = document.createElement('div');
-          wrapper.innerHTML = html;
-          const toolbar = wrapper.firstChild;
-          if (toolbar) {
-            document.body.insertBefore(toolbar, document.body.firstChild);
-          }
+    await (this.page as any).exposeFunction('__twStartAssertion', async () => {
+      await this.startAssertionMode();
+    });
 
-          // eslint-disable-next-line no-eval
-          eval(listenerScript);
-        });
-      },
-      TOOLBAR_HTML,
-      TOOLBAR_LISTENER_SCRIPT
-    );
+    await (this.page as any).exposeFunction('__twConfirmAssertion', async (assertionType: string, assertionValue: string) => {
+      await this.confirmAssertion(assertionType, assertionValue);
+    });
+
+    await (this.page as any).exposeFunction('__twCancelAssertion', async () => {
+      await this.cancelAssertion();
+    });
+
+    // Inject toolbar using string template to avoid TypeScript DOM errors
+    const toolbarInjectionScript = `
+      console.log('[TrailWright] Init script running, readyState:', document.readyState);
+      function injectToolbar() {
+        console.log('[TrailWright] Injecting toolbar...');
+        if (document.getElementById('trailwright-recorder-toolbar')) {
+          console.log('[TrailWright] Toolbar already exists');
+          return;
+        }
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = ${JSON.stringify(TOOLBAR_HTML)};
+        console.log('[TrailWright] Created wrapper with', wrapper.children.length, 'children');
+        // Insert all children (toolbar, modal, backdrop, style)
+        while (wrapper.firstChild) {
+          document.body.insertBefore(wrapper.firstChild, document.body.firstChild);
+        }
+        console.log('[TrailWright] Toolbar injected successfully');
+        eval(${JSON.stringify(TOOLBAR_LISTENER_SCRIPT)});
+        console.log('[TrailWright] Listener script executed');
+      }
+      // Handle both cases: DOM not ready yet, or already loaded
+      if (document.readyState === 'loading') {
+        console.log('[TrailWright] Waiting for DOMContentLoaded');
+        document.addEventListener('DOMContentLoaded', injectToolbar);
+      } else {
+        injectToolbar();
+      }
+    `;
+    await (this.page as any).addInitScript(toolbarInjectionScript);
   }
 
   private async updateToolbar(): Promise<void> {
@@ -401,9 +516,188 @@ export class RecordModeGenerator extends EventEmitter {
 
   async stop(): Promise<void> {
     this.state.recordingActive = false;
-    this.state.status = 'completed';
+    this.state.status = 'paused';
     this.state.updatedAt = new Date().toISOString();
+
+    // Update toolbar to show paused state
+    try {
+      const pausedScript = `
+        var toolbar = document.getElementById('trailwright-recorder-toolbar');
+        var stopBtn = document.getElementById('tw-stop-recording');
+        var assertBtn = document.getElementById('tw-add-assertion');
+        var recordingDot = document.getElementById('tw-recording-dot');
+        var stepCount = document.getElementById('tw-step-count');
+
+        if (toolbar) toolbar.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+        if (recordingDot) { recordingDot.style.background = '#f59e0b'; recordingDot.style.animation = 'none'; }
+        if (stepCount) stepCount.textContent = '⏸️ Paused - Edit steps or Resume';
+        if (stopBtn) { stopBtn.textContent = '⚠️ Keep window open'; stopBtn.style.cursor = 'default'; stopBtn.style.background = 'rgba(255,255,255,0.4)'; }
+        if (assertBtn) assertBtn.style.display = 'none';
+      `;
+      await (this.page as any).evaluate((script: string) => {
+        // eslint-disable-next-line no-eval
+        eval(script);
+      }, pausedScript);
+    } catch {
+      // Toolbar may not be ready; ignore errors
+    }
+
     this.emit('stateChange', this.getState());
+  }
+
+  async resume(): Promise<void> {
+    this.state.recordingActive = true;
+    this.state.status = 'running';
+    this.state.updatedAt = new Date().toISOString();
+
+    // Restore toolbar to recording state
+    try {
+      const resumeScript = `
+        var toolbar = document.getElementById('trailwright-recorder-toolbar');
+        var stopBtn = document.getElementById('tw-stop-recording');
+        var assertBtn = document.getElementById('tw-add-assertion');
+        var recordingDot = document.getElementById('tw-recording-dot');
+
+        if (toolbar) toolbar.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+        if (recordingDot) { recordingDot.style.background = '#ef4444'; recordingDot.style.animation = 'tw-pulse 2s infinite'; }
+        if (stopBtn) { stopBtn.textContent = 'Pause Recording'; stopBtn.style.cursor = 'pointer'; stopBtn.style.background = 'rgba(255,255,255,0.2)'; }
+        if (assertBtn) assertBtn.style.display = '';
+      `;
+      await (this.page as any).evaluate((script: string) => {
+        // eslint-disable-next-line no-eval
+        eval(script);
+      }, resumeScript);
+    } catch {
+      // Toolbar may not be ready; ignore errors
+    }
+
+    await this.updateToolbar();
+    this.emit('stateChange', this.getState());
+  }
+
+  private async startAssertionMode(): Promise<void> {
+    this.state.assertionPickerActive = true;
+    this.state.updatedAt = new Date().toISOString();
+
+    // Update toolbar to show assertion mode
+    try {
+      await (this.page as any).evaluate((script: string) => {
+        // eslint-disable-next-line no-eval
+        eval(script);
+      }, getAssertionModeScript(true));
+    } catch {
+      // Toolbar may not be ready; ignore errors
+    }
+
+    this.emit('stateChange', this.getState());
+  }
+
+  private async endAssertionMode(): Promise<void> {
+    this.state.assertionPickerActive = false;
+    this.state.updatedAt = new Date().toISOString();
+
+    // Update toolbar back to normal
+    try {
+      await (this.page as any).evaluate((script: string) => {
+        // eslint-disable-next-line no-eval
+        eval(script);
+      }, getAssertionModeScript(false));
+    } catch {
+      // Toolbar may not be ready; ignore errors
+    }
+
+    await this.updateToolbar();
+    this.emit('stateChange', this.getState());
+  }
+
+  private async showAssertionModal(elementName: string, elementText: string): Promise<void> {
+    if (!this.page) return;
+
+    try {
+      await (this.page as any).evaluate((script: string) => {
+        // eslint-disable-next-line no-eval
+        eval(script);
+      }, getShowAssertionModalScript(elementName, elementText));
+    } catch (error) {
+      console.error('Failed to show assertion modal:', error);
+    }
+  }
+
+  private async hideAssertionModal(): Promise<void> {
+    if (!this.page) return;
+
+    try {
+      await (this.page as any).evaluate((script: string) => {
+        // eslint-disable-next-line no-eval
+        eval(script);
+      }, getHideAssertionModalScript());
+    } catch (error) {
+      console.error('Failed to hide assertion modal:', error);
+    }
+  }
+
+  private async confirmAssertion(assertionType: string, assertionValue: string): Promise<void> {
+    await this.hideAssertionModal();
+
+    if (!this.pendingAssertion) {
+      await this.endAssertionMode();
+      return;
+    }
+
+    const { elementInfo, url, screenshotData, elementText } = this.pendingAssertion;
+    const elementName = elementInfo.name || 'element';
+
+    // Generate assertion code and summary based on type
+    let playwrightCode: string;
+    let qaSummary: string;
+
+    switch (assertionType) {
+      case 'text':
+        const textToCheck = assertionValue || elementText;
+        playwrightCode = `await expect(page.${elementInfo.selector}).toContainText('${textToCheck.replace(/'/g, "\\'")}');`;
+        qaSummary = `Verify '${elementName}' contains text "${textToCheck}"`;
+        break;
+      case 'value':
+        playwrightCode = `await expect(page.${elementInfo.selector}).toHaveValue('${assertionValue.replace(/'/g, "\\'")}');`;
+        qaSummary = `Verify '${elementName}' has value "${assertionValue}"`;
+        break;
+      case 'url':
+        playwrightCode = `await expect(page).toHaveURL(/${assertionValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/);`;
+        qaSummary = `Verify page URL contains "${assertionValue}"`;
+        break;
+      case 'visible':
+      default:
+        playwrightCode = `await expect(page.${elementInfo.selector}).toBeVisible();`;
+        qaSummary = `Verify '${elementName}' is visible`;
+        break;
+    }
+
+    const step: RecordedStep = {
+      stepNumber: ++this.stepCounter,
+      interactionType: 'assert',
+      elementInfo,
+      qaSummary,
+      playwrightCode,
+      timestamp: new Date().toISOString(),
+      url,
+      screenshotData
+    };
+
+    this.recordedSteps.push(step);
+    this.state.recordedSteps = [...this.recordedSteps];
+    this.state.steps = [...this.recordedSteps];
+    this.state.stepsTaken = this.recordedSteps.length;
+    this.state.updatedAt = new Date().toISOString();
+
+    this.pendingAssertion = undefined;
+    await this.endAssertionMode();
+    this.emit('step', step);
+  }
+
+  private async cancelAssertion(): Promise<void> {
+    await this.hideAssertionModal();
+    this.pendingAssertion = undefined;
+    await this.endAssertionMode();
   }
 
   async generateTestFile(): Promise<string> {
@@ -422,11 +716,15 @@ export class RecordModeGenerator extends EventEmitter {
  */`;
 
     const testSteps = this.recordedSteps
-      .map((step) => {
-        const comment = `  // Step ${step.stepNumber}: ${step.qaSummary}`;
+      .map((step, index) => {
+        // Strip newlines from qaSummary to avoid breaking single-line comments
+        const sanitizedSummary = step.qaSummary.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+        const comment = `  // Step ${step.stepNumber}: ${sanitizedSummary}`;
         const code = `  ${step.playwrightCode}`;
         const wait = step.waitCode ? `  ${step.waitCode}` : '';
-        return [comment, code, wait].filter(Boolean).join('\n');
+        // Add 500ms wait between steps (except after the last step)
+        const defaultWait = index < this.recordedSteps.length - 1 ? '  await page.waitForTimeout(500);' : '';
+        return [comment, code, wait, defaultWait].filter(Boolean).join('\n');
       })
       .join('\n\n');
 
@@ -452,5 +750,54 @@ ${testSteps}
 
   getSteps(): RecordedStep[] {
     return [...this.recordedSteps];
+  }
+
+  // Step management methods
+  deleteStep(stepNumber: number): void {
+    const stepIndex = this.recordedSteps.findIndex(s => s.stepNumber === stepNumber);
+    if (stepIndex === -1) {
+      throw new Error('Step not found');
+    }
+    this.recordedSteps.splice(stepIndex, 1);
+    this.state.recordedSteps = [...this.recordedSteps];
+    this.state.steps = [...this.recordedSteps];
+    this.state.stepsTaken = this.recordedSteps.length;
+    this.state.updatedAt = new Date().toISOString();
+    this.emit('stateChange', this.getState());
+  }
+
+  updateStep(stepNumber: number, updates: { qaSummary?: string; playwrightCode?: string }): void {
+    const stepIndex = this.recordedSteps.findIndex(s => s.stepNumber === stepNumber);
+    if (stepIndex === -1) {
+      throw new Error('Step not found');
+    }
+    if (updates.qaSummary !== undefined) {
+      this.recordedSteps[stepIndex].qaSummary = updates.qaSummary;
+    }
+    if (updates.playwrightCode !== undefined) {
+      this.recordedSteps[stepIndex].playwrightCode = updates.playwrightCode;
+    }
+    this.state.recordedSteps = [...this.recordedSteps];
+    this.state.steps = [...this.recordedSteps];
+    this.state.updatedAt = new Date().toISOString();
+    this.emit('stateChange', this.getState());
+  }
+
+  // Variable management methods
+  getVariables(): Variable[] {
+    return [...this.variables];
+  }
+
+  setVariable(name: string, sampleValue: string, type: 'string' | 'number' = 'string'): void {
+    const existingIndex = this.variables.findIndex(v => v.name === name);
+    if (existingIndex >= 0) {
+      this.variables[existingIndex] = { name, sampleValue, type };
+    } else {
+      this.variables.push({ name, sampleValue, type });
+    }
+  }
+
+  removeVariable(name: string): void {
+    this.variables = this.variables.filter(v => v.name !== name);
   }
 }

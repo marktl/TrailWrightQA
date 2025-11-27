@@ -185,6 +185,7 @@ export default function TestWorkspace() {
   const [insertionSessionId, setInsertionSessionId] = useState<string | null>(null);
   const [initializingInsertion, setInitializingInsertion] = useState(false);
   const [insertionError, setInsertionError] = useState<string | null>(null);
+  const [logsExpanded, setLogsExpanded] = useState(false);
 
   const refreshRuns = useCallback(async () => {
     if (!testId) return;
@@ -1247,6 +1248,48 @@ export default function TestWorkspace() {
                       <p className="mt-2 text-xs text-amber-700">
                         What went wrong: {runState.result.errorSummary}
                       </p>
+                    )}
+                  </div>
+
+                  {/* System Logs (Collapsible) */}
+                  <div className="border-t pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setLogsExpanded((prev) => !prev)}
+                      className="flex w-full items-center justify-between"
+                    >
+                      <div>
+                        <h3 className="text-sm font-semibold text-gray-900">System Logs</h3>
+                        <p className="text-xs text-gray-500">{logItems.length} entries</p>
+                      </div>
+                      <svg
+                        className={`h-4 w-4 text-gray-600 transition-transform ${logsExpanded ? 'rotate-180' : ''}`}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                      </svg>
+                    </button>
+
+                    {logsExpanded && (
+                      <div
+                        ref={logsRef}
+                        className="mt-3 bg-gray-900 text-green-400 font-mono text-xs max-h-[200px] overflow-y-auto px-3 py-2 rounded"
+                      >
+                        {logItems.length === 0 ? (
+                          <p className="text-gray-500">Waiting for logs...</p>
+                        ) : (
+                          logItems.map((log, index) => (
+                            <div key={index} className="mb-1">
+                              {typeof log === 'string' ? log : log.message || JSON.stringify(log)}
+                            </div>
+                          ))
+                        )}
+                        {currentStatus === 'running' && <div className="animate-pulse mt-2">▊</div>}
+                      </div>
                     )}
                   </div>
 

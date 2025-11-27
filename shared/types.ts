@@ -66,6 +66,7 @@ export interface RunResult {
   stepCounts?: StepCounts;
   failedStepTitles?: string[];
   rowResults?: RowResult[];
+  logs?: RunLogEntry[];
 }
 
 export interface RowResult {

@@ -119,7 +119,7 @@ router.get('/:runId', async (req, res) => {
             : 'failed',
       startedAt: result.startedAt,
       updatedAt: result.endedAt,
-      logs: [],
+      logs: result.logs ?? [],
       steps: result.steps ?? [],
       chat: [],
       result

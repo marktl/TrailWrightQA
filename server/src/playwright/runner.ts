@@ -39,6 +39,7 @@ export interface FinalizeRunOptions {
   terminated?: boolean;
   terminationReason?: string;
   steps?: StepSummary[];
+  logs?: Array<{ id: string; timestamp: string; stream: string; message: string }>;
 }
 
 type ArtifactRecord = {
@@ -429,7 +430,8 @@ export async function finalizeRunExecution(
     errorSummary,
     ...(normalizedSteps ? { steps: normalizedSteps } : {}),
     ...(stepCounts ? { stepCounts } : {}),
-    ...(failedTitles ? { failedStepTitles: failedTitles } : {})
+    ...(failedTitles ? { failedStepTitles: failedTitles } : {}),
+    ...(options.logs && options.logs.length ? { logs: options.logs } : {})
   };
 
   await fs.writeFile(path.join(context.runDir, 'result.json'), JSON.stringify(result, null, 2));
