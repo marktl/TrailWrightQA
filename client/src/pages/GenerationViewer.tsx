@@ -416,18 +416,15 @@ export default function GenerationViewer() {
     setDeletingStepNumber(stepNumber);
     try {
       const response = await api.deleteGenerationStep(sessionId, stepNumber);
-      console.log('Delete response:', response);
-      console.log('response.steps:', response.steps);
-      console.log('response.state:', response.state);
+
+      // DEBUG: Alert to confirm code is running
+      alert(`Delete response received! Steps: ${response.steps?.length}, Has state: ${!!response.state}`);
 
       // For cached sessions (recording stopped), handle response directly
       // since no SSE event will be emitted
       if (response.steps && response.state) {
-        console.log('Updating steps and state from response');
         setSteps(response.steps);
         setState(response.state);
-      } else {
-        console.log('Response missing steps or state, relying on SSE event');
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete step';

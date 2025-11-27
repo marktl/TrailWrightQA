@@ -8,7 +8,7 @@ interface Variable {
 }
 
 export function GenerationViewer({ sessionId }: { sessionId: string }) {
-  const { state, steps, isConnected, stopRecording } = useGenerationStream(sessionId);
+  const { state, steps, isConnected, stopRecording, deleteStep } = useGenerationStream(sessionId);
   const [editingStep, setEditingStep] = useState<number | null>(null);
   const [editedSummary, setEditedSummary] = useState('');
   const [editedCode, setEditedCode] = useState('');
@@ -65,16 +65,8 @@ export function GenerationViewer({ sessionId }: { sessionId: string }) {
       return;
     }
 
-    try {
-      const response = await fetch(`/api/generate/${sessionId}/steps/${stepNumber}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete step');
-      }
-    } catch (error) {
-      console.error('Failed to delete step:', error);
+    const success = await deleteStep(stepNumber);
+    if (!success) {
       alert('Failed to delete step');
     }
   };
