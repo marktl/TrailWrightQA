@@ -373,7 +373,7 @@ export async function finalizeRunExecution(
     }
     matchedScreenshots.add(record.filename);
     screenshotDetails.push({
-      path: record.filename, // Store just the filename, not the full URL
+      path: buildArtifactUrl(context.runId, record.filename), // Use full URL for client
       stepTitle: attachment.stepTitle || undefined, // Use step title from test.step()
       testTitle: attachment.testTitle,
       capturedAt: attachment.capturedAt,
@@ -386,7 +386,7 @@ export async function finalizeRunExecution(
   );
   remainingScreenshots.forEach((record, index) => {
     screenshotDetails.push({
-      path: record.filename, // Store just the filename
+      path: buildArtifactUrl(context.runId, record.filename), // Use full URL for client
       stepTitle: `Screenshot ${screenshotDetails.length + index + 1}`
     });
   });

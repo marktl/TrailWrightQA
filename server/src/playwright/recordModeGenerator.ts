@@ -1,7 +1,6 @@
 import type { Browser, Page } from 'playwright';
 import { EventEmitter } from 'events';
 import type { LiveGenerationState, RecordedStep } from '../../../shared/types.js';
-import { generateCodeFromInteraction } from '../ai/recordModePrompts.js';
 import { TOOLBAR_HTML, TOOLBAR_LISTENER_SCRIPT, getToolbarUpdateScript, getAssertionModeScript, getShowAssertionModalScript, getHideAssertionModalScript } from './toolbarInjection.js';
 
 export interface RecordModeConfig {
@@ -137,6 +136,7 @@ export class RecordModeGenerator extends EventEmitter {
           ariaLabel: target.getAttribute('aria-label'),
           textContent: target.textContent ? target.textContent.trim() : '',
           id: target.id,
+          name: target.getAttribute('name'),
           className: target.className
         });
       }, true);
@@ -216,31 +216,37 @@ export class RecordModeGenerator extends EventEmitter {
       return;
     }
 
-    const aiResponse = await generateCodeFromInteraction(
-      {
-        type: 'click',
-        element: {
-          role: elementInfo.role,
-          name: elementInfo.name,
-          tagName: data?.tagName
-        }
-      },
-      {
-        url: currentUrl,
-        stepNumber: this.stepCounter + 1
-      },
-      this.config.aiProvider
-    );
+    // Generate playwright code using the pre-computed selector (which has proper ID fallback)
+    // Don't use AI for selector generation - it doesn't have enough context
+    const playwrightCode = `await page.${elementInfo.selector}.click();`;
+
+    // Generate a descriptive QA summary - prefer name, then derive from selector
+    let clickTarget = elementInfo.name || elementInfo.role;
+    if (!clickTarget) {
+      // Extract useful info from selector for QA summary
+      const idMatch = elementInfo.selector.match(/#([^'"]+)/);
+      const nameMatch = elementInfo.selector.match(/\[name="([^"]+)"\]/);
+      const textMatch = elementInfo.selector.match(/getByText\('([^']+)'\)/);
+      if (idMatch) {
+        clickTarget = idMatch[1];
+      } else if (nameMatch) {
+        clickTarget = nameMatch[1];
+      } else if (textMatch) {
+        clickTarget = textMatch[1];
+      } else {
+        clickTarget = data?.tagName?.toLowerCase() || 'element';
+      }
+    }
+    const qaSummary = `Click '${clickTarget}'`;
 
     const step: RecordedStep = {
       stepNumber: ++this.stepCounter,
       interactionType: 'click',
       elementInfo,
-      qaSummary: aiResponse.qaSummary,
-      playwrightCode: aiResponse.playwrightCode,
+      qaSummary,
+      playwrightCode,
       timestamp: new Date().toISOString(),
       url: currentUrl,
-      waitCode: aiResponse.waitHint || undefined,
       screenshotData
     };
 
@@ -369,10 +375,27 @@ export class RecordModeGenerator extends EventEmitter {
   }> {
     const explicitRole = element?.role;
     const ariaLabel = element?.ariaLabel;
-    const textContent = element?.textContent;
+    const rawTextContent = element?.textContent;
     const elementName = element?.name; // HTML name attribute (for form fields)
     const elementId = element?.id;
-    const displayName = ariaLabel || textContent || elementName || '';
+
+    // Sanitize textContent: collapse whitespace, remove newlines, limit length
+    // Long or multi-line text content makes terrible selectors
+    const MAX_TEXT_LENGTH = 80;
+    let textContent: string | undefined;
+    if (rawTextContent) {
+      // Collapse all whitespace (including newlines) to single spaces and trim
+      const sanitized = rawTextContent.replace(/\s+/g, ' ').trim();
+      // Only use if it's reasonably short and doesn't look like a whole form/page
+      if (sanitized.length <= MAX_TEXT_LENGTH && !sanitized.includes('You must enter')) {
+        textContent = sanitized;
+      }
+    }
+
+    // Only use ariaLabel or sanitized textContent as accessible name for getByRole
+    // HTML name attribute is NOT an accessible name and should not be used with getByRole
+    const accessibleName = ariaLabel || textContent || '';
+    const displayName = accessibleName || elementName || '';
     const tagName = element?.tagName?.toLowerCase?.() || 'div';
     const inputType = element?.type?.toLowerCase?.() || '';
 
@@ -414,11 +437,13 @@ export class RecordModeGenerator extends EventEmitter {
       }
     }
 
-    // Generate selector with priority: role+name > label > id > name attr > tagName
+    // Generate selector with priority: role+accessibleName > label > id > name attr > text > tagName
+    // IMPORTANT: Only use getByRole with name when we have an actual accessible name
+    // (ariaLabel or textContent), NOT the HTML name attribute
     let selector: string;
-    if (role && displayName) {
+    if (role && accessibleName) {
       // Escape single quotes in the name
-      const escapedName = displayName.replace(/'/g, "\\'");
+      const escapedName = accessibleName.replace(/'/g, "\\'");
       selector = `getByRole('${role}', { name: '${escapedName}' })`;
     } else if (ariaLabel) {
       const escapedLabel = ariaLabel.replace(/'/g, "\\'");
@@ -429,9 +454,15 @@ export class RecordModeGenerator extends EventEmitter {
     } else if (elementName) {
       // Use name attribute selector for form fields
       selector = `locator('[name="${elementName}"]')`;
+    } else if (textContent && textContent.length > 0 && textContent.length <= 50) {
+      // Use getByText for elements with short, unique text content
+      const escapedText = textContent.replace(/'/g, "\\'");
+      selector = `getByText('${escapedText}')`;
     } else {
-      // Last resort - generic tagName selector
+      // Last resort - generic tagName selector (will likely fail with strict mode)
+      // Mark as potentially ambiguous
       selector = `locator('${tagName}')`;
+      console.warn(`[RecordMode] Warning: Generic selector '${tagName}' generated - may be ambiguous`);
     }
 
     return {

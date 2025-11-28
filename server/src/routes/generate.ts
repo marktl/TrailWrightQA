@@ -1130,17 +1130,19 @@ router.post('/:sessionId/save', async (req, res) => {
         }))
       };
 
-      // Generate test code (without metadata comment)
+      // Generate test code wrapped in test.step() for proper step reporting
       const testSteps = steps
         .map((step, index) => {
-          // Strip newlines from qaSummary to avoid breaking single-line comments
+          // Strip newlines and escape quotes from qaSummary for use in string literal
           const sanitizedSummary = step.qaSummary.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
-          const comment = `  // Step ${step.stepNumber}: ${sanitizedSummary}`;
-          const code = `  ${step.playwrightCode}`;
-          const wait = step.waitCode ? `  ${step.waitCode}` : '';
+          const escapedSummary = sanitizedSummary.replace(/'/g, "\\'");
+          const code = `    ${step.playwrightCode}`;
+          const wait = step.waitCode ? `    ${step.waitCode}` : '';
           // Add 500ms wait between steps (except after the last step)
-          const defaultWait = index < steps.length - 1 ? '  await page.waitForTimeout(500);' : '';
-          return [comment, code, wait, defaultWait].filter(Boolean).join('\n');
+          const defaultWait = index < steps.length - 1 ? '    await page.waitForTimeout(500);' : '';
+          const innerCode = [code, wait, defaultWait].filter(Boolean).join('\n');
+          // Wrap in test.step() so Playwright reports QA summary as step title
+          return `  await test.step('${escapedSummary}', async () => {\n${innerCode}\n  });`;
         })
         .join('\n\n');
 
@@ -1199,17 +1201,19 @@ ${testSteps}
         }))
       };
 
-      // Generate test code (without metadata comment)
+      // Generate test code wrapped in test.step() for proper step reporting
       const testSteps = steps
         .map((step, index) => {
-          // Strip newlines from qaSummary to avoid breaking single-line comments
+          // Strip newlines and escape quotes from qaSummary for use in string literal
           const sanitizedSummary = step.qaSummary.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
-          const comment = `  // Step ${step.stepNumber}: ${sanitizedSummary}`;
-          const code = `  ${step.playwrightCode}`;
-          const wait = step.waitCode ? `  ${step.waitCode}` : '';
+          const escapedSummary = sanitizedSummary.replace(/'/g, "\\'");
+          const code = `    ${step.playwrightCode}`;
+          const wait = step.waitCode ? `    ${step.waitCode}` : '';
           // Add 500ms wait between steps (except after the last step)
-          const defaultWait = index < steps.length - 1 ? '  await page.waitForTimeout(500);' : '';
-          return [comment, code, wait, defaultWait].filter(Boolean).join('\n');
+          const defaultWait = index < steps.length - 1 ? '    await page.waitForTimeout(500);' : '';
+          const innerCode = [code, wait, defaultWait].filter(Boolean).join('\n');
+          // Wrap in test.step() so Playwright reports QA summary as step title
+          return `  await test.step('${escapedSummary}', async () => {\n${innerCode}\n  });`;
         })
         .join('\n\n');
 

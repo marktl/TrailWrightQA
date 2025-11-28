@@ -99,10 +99,15 @@ function summarizeStepData(
     return { counts: undefined, failedTitles: undefined };
   }
 
-  const counts: StepCounts = { total: steps.length, passed: 0, failed: 0, pending: 0 };
+  // Only count top-level steps (depth === 0) to show meaningful test actions
+  // rather than internal Playwright micro-operations
+  const topLevelSteps = steps.filter((step) => step.depth === 0);
+  const stepsToCount = topLevelSteps.length > 0 ? topLevelSteps : steps;
+
+  const counts: StepCounts = { total: stepsToCount.length, passed: 0, failed: 0, pending: 0 };
   const failed = new Set<string>();
 
-  for (const step of steps) {
+  for (const step of stepsToCount) {
     if (step.status === 'passed') {
       counts.passed += 1;
     } else if (step.status === 'failed') {
