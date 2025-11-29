@@ -14,6 +14,7 @@ import { LiveTestGenerator } from '../playwright/liveTestGenerator.js';
 import { RecordModeGenerator, type RecordModeConfig } from '../playwright/recordModeGenerator.js';
 import { loadConfig } from '../storage/config.js';
 import { saveTest } from '../storage/tests.js';
+import { saveStepScreenshots } from '../storage/screenshots.js';
 import { getCredentialById } from '../storage/credentials.js';
 import { VariableStorage } from '../storage/variables.js';
 import { CONFIG } from '../config.js';
@@ -1112,6 +1113,9 @@ router.post('/:sessionId/save', async (req, res) => {
       const state = recordGenerator.getState();
       const steps = recordGenerator.getSteps();
 
+      // Save screenshots to disk and get paths
+      const screenshotPaths = await saveStepScreenshots(CONFIG.DATA_DIR, sessionId, steps);
+
       // Create test metadata matching the expected structure
       const metadata: TestMetadata = {
         id: sessionId,
@@ -1126,7 +1130,8 @@ router.post('/:sessionId/save', async (req, res) => {
         steps: steps.map(step => ({
           number: step.stepNumber,
           qaSummary: step.qaSummary,
-          playwrightCode: step.playwrightCode
+          playwrightCode: step.playwrightCode,
+          screenshotPath: screenshotPaths.get(step.stepNumber)
         }))
       };
 
@@ -1183,6 +1188,9 @@ ${testSteps}
       const state = cached.state;
       const steps = cached.steps;
 
+      // Save screenshots to disk and get paths
+      const screenshotPaths = await saveStepScreenshots(CONFIG.DATA_DIR, sessionId, steps);
+
       // Create test metadata matching the expected structure
       const metadata: TestMetadata = {
         id: sessionId,
@@ -1197,7 +1205,8 @@ ${testSteps}
         steps: steps.map(step => ({
           number: step.stepNumber,
           qaSummary: step.qaSummary,
-          playwrightCode: step.playwrightCode
+          playwrightCode: step.playwrightCode,
+          screenshotPath: screenshotPaths.get(step.stepNumber)
         }))
       };
 

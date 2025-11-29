@@ -10,7 +10,8 @@ import { loadConfig } from '../storage/config.js';
 import { CONFIG } from '../config.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
 import type { Test } from '../types.js';
-import type { TestMetadata } from '../../../shared/types.js';
+import type { TestMetadata, ExtractedStep } from '../../../shared/types.js';
+import { getTestSteps } from '../playwright/stepExtractor.js';
 
 const router = express.Router();
 const zipUpload = express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '200mb' });
@@ -148,6 +149,33 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Serve step screenshots for a test (must be before /:id to avoid route conflict)
+router.get('/:testId/screenshots/:filename', async (req, res) => {
+  try {
+    const { testId, filename } = req.params;
+
+    // Validate filename to prevent directory traversal
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const screenshotPath = path.join(CONFIG.DATA_DIR, 'screenshots', testId, filename);
+
+    // Read and send the file directly (more reliable than sendFile on Windows)
+    try {
+      const fileBuffer = await fs.readFile(screenshotPath);
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      res.send(fileBuffer);
+    } catch {
+      return res.status(404).json({ error: 'Screenshot not found' });
+    }
+  } catch (error: any) {
+    console.error('Failed to serve screenshot:', error);
+    res.status(500).json({ error: error.message || 'Failed to serve screenshot' });
+  }
+});
+
 // Get single test
 router.get('/:id', async (req, res) => {
   try {
@@ -155,6 +183,17 @@ router.get('/:id', async (req, res) => {
     res.json({ test });
   } catch (err: any) {
     res.status(404).json({ error: 'Test not found' });
+  }
+});
+
+// Get steps for a test (for Run Builder step selection)
+router.get('/:id/steps', async (req, res) => {
+  try {
+    const testId = req.params.id;
+    const steps = await getTestSteps(CONFIG.DATA_DIR, testId);
+    res.json({ steps });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to get test steps' });
   }
 });
 

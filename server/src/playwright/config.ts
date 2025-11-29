@@ -17,11 +17,12 @@ const config = {
     const slowMo = Number.parseInt(process.env.TRAILWRIGHT_SLOWMO ?? '0', 10) || 0;
     const viewportWidth = process.env.TRAILWRIGHT_VIEWPORT_WIDTH;
     const viewportHeight = process.env.TRAILWRIGHT_VIEWPORT_HEIGHT;
+    const wsEndpoint = process.env.TRAILWRIGHT_WS_ENDPOINT;
 
     const config = {
       headless,
       slowMo,
-      trace: 'retain-on-failure',
+      trace: 'on', // Always capture traces for debugging
       screenshot: 'on', // Capture screenshots for every run (supports reporting/export)
       video: 'retain-on-failure', // Retain videos only when failures occur to control storage
     };
@@ -31,6 +32,13 @@ const config = {
       config.viewport = {
         width: Number.parseInt(viewportWidth, 10),
         height: Number.parseInt(viewportHeight, 10)
+      };
+    }
+
+    // Connect to existing browser if WebSocket endpoint provided (for multi-run browser reuse)
+    if (wsEndpoint) {
+      config.connectOptions = {
+        wsEndpoint: wsEndpoint
       };
     }
 

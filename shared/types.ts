@@ -22,6 +22,7 @@ export interface TestStepMetadata {
   number: number;
   qaSummary: string;
   playwrightCode: string;
+  screenshotPath?: string;
 }
 
 export interface VariableDefinition {
@@ -276,4 +277,75 @@ export interface LiveGenerationEvent {
   type: LiveGenerationEventType;
   timestamp: string;
   payload: any;
+}
+
+// ============================================
+// Multi-Run (Run Builder) Types
+// ============================================
+
+/** Configuration for a single test in a run queue */
+export interface QueuedTest {
+  testId: string;
+  testName: string;
+  order: number;
+  startFromStep?: number;  // 0 = start from beginning (default)
+  enabled: boolean;        // Can toggle tests on/off without removing
+}
+
+/** Configuration for a multi-test run */
+export interface RunConfiguration {
+  tests: QueuedTest[];
+  options: {
+    headed: boolean;
+    speed: number;           // 0.5 - 2.0
+    reusesBrowser: boolean;  // Chain tests in same browser
+    stopOnFailure: boolean;
+    viewportSize?: ViewportSize;
+  };
+}
+
+/** Status of a test within a multi-run */
+export type QueuedTestStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+
+/** Queued test with runtime state */
+export interface QueuedTestWithState extends QueuedTest {
+  runId?: string;           // Assigned when test starts
+  status: QueuedTestStatus;
+  error?: string;
+  duration?: number;
+}
+
+/** Active multi-test run session state */
+export interface MultiRunState {
+  configId: string;           // Unique ID for this run configuration
+  status: 'queued' | 'running' | 'paused' | 'stopped' | 'completed' | 'failed';
+  currentTestIndex: number;
+  tests: QueuedTestWithState[];
+  startedAt: string;
+  endedAt?: string;
+  browserEndpoint?: string;   // CDP endpoint for browser reuse
+  totalDuration?: number;
+}
+
+/** Event types for multi-run SSE stream */
+export type MultiRunEventType =
+  | 'hydrate'          // Initial state dump
+  | 'status'           // Overall status change
+  | 'test_start'       // A test in queue started
+  | 'test_complete'    // A test completed (with pass/fail)
+  | 'progress'         // Current test index update
+  | 'log'              // Log message
+  | 'error';           // Error event
+
+export interface MultiRunEvent {
+  type: MultiRunEventType;
+  timestamp: string;
+  payload: any;
+}
+
+/** Extracted step info for step selection UI */
+export interface ExtractedStep {
+  number: number;
+  title: string;       // QA summary from test.step('title', ...)
+  lineNumber?: number; // For future "jump to code" feature
 }

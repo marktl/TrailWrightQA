@@ -3,6 +3,8 @@ import type { ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { ApiTestMetadata } from '../api/client';
+import RunBuilderDrawer from '../components/RunBuilderDrawer';
+import MultiRunProgress from '../components/MultiRunProgress';
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
@@ -46,6 +48,11 @@ export default function Home() {
   const [bulkCategoryInput, setBulkCategoryInput] = useState('');
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
   const [performingBulk, setPerformingBulk] = useState(false);
+
+  // Run Builder state
+  const [showRunBuilder, setShowRunBuilder] = useState(false);
+  const [activeMultiRunId, setActiveMultiRunId] = useState<string | null>(null);
+
   const runStatusPills: Record<string, string> = {
     passed: 'bg-emerald-50 text-emerald-700',
     failed: 'bg-red-50 text-red-600',
@@ -283,6 +290,13 @@ export default function Home() {
     try {
       switch (bulkAction) {
         case 'run': {
+          // For multiple tests, open Run Builder drawer
+          if (selectedTests.length > 1) {
+            setShowRunBuilder(true);
+            setPerformingBulk(false);
+            return;
+          }
+          // For single test, run immediately
           for (const id of selectedTests) {
             await api.runTest(id);
           }
@@ -385,7 +399,7 @@ export default function Home() {
                 onClick={() => navigate('/generate')}
                 className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
               >
-                Generate with AI
+                Generate Test
               </button>
               <button
                 onClick={handleImportClick}
@@ -679,6 +693,30 @@ export default function Home() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Run Builder Drawer */}
+      <RunBuilderDrawer
+        isOpen={showRunBuilder}
+        onClose={() => setShowRunBuilder(false)}
+        selectedTests={tests.filter((t) => selectedTests.includes(t.id))}
+        onStartRun={(configId) => {
+          setShowRunBuilder(false);
+          setActiveMultiRunId(configId);
+          clearSelection();
+        }}
+      />
+
+      {/* Multi-Run Progress Modal */}
+      {activeMultiRunId && (
+        <MultiRunProgress
+          configId={activeMultiRunId}
+          onClose={() => {
+            setActiveMultiRunId(null);
+            loadTests(); // Refresh test list to show updated run statuses
+          }}
+          onViewRun={(runId) => navigate(`/tests/${runId.split('_')[1]}?runId=${runId}`)}
+        />
       )}
     </div>
   );

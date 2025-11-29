@@ -15,6 +15,15 @@ import {
 } from '../playwright/liveRunManager.js';
 import type { LiveRunEvent } from '../playwright/liveRunManager.js';
 import type { LiveRunState } from '../types.js';
+import {
+  startMultiRun,
+  getMultiRunSession,
+  getMultiRunState,
+  subscribeToMultiRun,
+  controlMultiRun,
+  MultiRunControlAction
+} from '../playwright/multiRunManager.js';
+import type { RunConfiguration, MultiRunState, MultiRunEvent } from '../../../shared/types.js';
 import { loadConfig } from '../storage/config.js';
 import { chatWithAI } from '../ai/index.js';
 import { resolveNpxInvocation } from '../utils/npx.js';
@@ -119,7 +128,7 @@ router.get('/:runId', async (req, res) => {
             : 'failed',
       startedAt: result.startedAt,
       updatedAt: result.endedAt,
-      logs: result.logs ?? [],
+      logs: [],
       steps: result.steps ?? [],
       chat: [],
       result
@@ -284,6 +293,139 @@ router.get('/:runId/artifacts/:fileName', async (req, res) => {
     res.sendFile(filePath);
   } catch {
     res.status(404).json({ error: 'Artifact not found' });
+  }
+});
+
+// ============================================
+// Multi-Run (Run Builder) Endpoints
+// ============================================
+
+/**
+ * Start a multi-test run
+ * POST /api/runs/multi
+ */
+router.post('/multi', async (req, res) => {
+  try {
+    const config: RunConfiguration = req.body;
+
+    // Validate configuration
+    if (!config.tests || !Array.isArray(config.tests) || config.tests.length === 0) {
+      return res.status(400).json({ error: 'At least one test is required' });
+    }
+
+    // Validate each test has required fields
+    for (const test of config.tests) {
+      if (!test.testId || typeof test.testId !== 'string') {
+        return res.status(400).json({ error: 'Each test must have a testId' });
+      }
+      if (!test.testName || typeof test.testName !== 'string') {
+        return res.status(400).json({ error: 'Each test must have a testName' });
+      }
+    }
+
+    // Set defaults for options
+    const normalizedConfig: RunConfiguration = {
+      tests: config.tests.map((t, i) => ({
+        testId: t.testId,
+        testName: t.testName,
+        order: typeof t.order === 'number' ? t.order : i,
+        startFromStep: typeof t.startFromStep === 'number' ? t.startFromStep : 0,
+        enabled: typeof t.enabled === 'boolean' ? t.enabled : true
+      })),
+      options: {
+        headed: config.options?.headed ?? true,
+        speed: config.options?.speed ?? 1,
+        reusesBrowser: config.options?.reusesBrowser ?? false,
+        stopOnFailure: config.options?.stopOnFailure ?? false,
+        viewportSize: config.options?.viewportSize
+      }
+    };
+
+    const session = await startMultiRun(CONFIG.DATA_DIR, normalizedConfig);
+    return res.status(202).json({ configId: session.id });
+  } catch (err: any) {
+    console.error('Multi-run start error:', err);
+    return res.status(500).json({ error: err?.message || 'Failed to start multi-run' });
+  }
+});
+
+/**
+ * Get multi-run state
+ * GET /api/runs/multi/:configId
+ */
+router.get('/multi/:configId', (req, res) => {
+  const { configId } = req.params;
+  const state = getMultiRunState(configId);
+
+  if (!state) {
+    return res.status(404).json({ error: 'Multi-run not found' });
+  }
+
+  return res.json({ multiRun: state });
+});
+
+/**
+ * SSE stream for multi-run progress
+ * GET /api/runs/multi/:configId/stream
+ */
+router.get('/multi/:configId/stream', (req, res) => {
+  const { configId } = req.params;
+  const session = getMultiRunSession(configId);
+
+  if (!session) {
+    return res.status(404).json({ error: 'Multi-run not found' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  let closed = false;
+
+  const heartbeat = setInterval(() => {
+    if (!closed) {
+      res.write(': heartbeat\n\n');
+    }
+  }, 15000);
+
+  const send = (event: MultiRunEvent | { type: 'hydrate'; payload: MultiRunState }) => {
+    if (!closed) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  };
+
+  // Send initial state
+  send({ type: 'hydrate', payload: session.getState(), timestamp: new Date().toISOString() });
+
+  const unsubscribe = subscribeToMultiRun(configId, (event) => {
+    send(event);
+  });
+
+  req.on('close', () => {
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+});
+
+/**
+ * Control multi-run (pause/resume/stop/skip)
+ * POST /api/runs/multi/:configId/control
+ */
+router.post('/multi/:configId/control', async (req, res) => {
+  const { configId } = req.params;
+  const { action } = req.body;
+
+  if (!action || !['pause', 'resume', 'stop', 'skip'].includes(action)) {
+    return res.status(400).json({ error: 'Invalid control action. Must be: pause, resume, stop, or skip' });
+  }
+
+  try {
+    await controlMultiRun(configId, action as MultiRunControlAction);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Unable to control multi-run' });
   }
 });
 

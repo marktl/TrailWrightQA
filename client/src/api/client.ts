@@ -10,7 +10,11 @@ import type {
   LiveGenerationEvent,
   RecordedStep,
   VariableDefinition,
-  VariableRow
+  VariableRow,
+  RunConfiguration,
+  MultiRunState,
+  MultiRunEvent,
+  ExtractedStep
 } from '../../../shared/types';
 
 const API_BASE = '/api';
@@ -56,6 +60,11 @@ export type ApiCredential = {
 };
 
 export type RunControlAction = 'pause' | 'resume' | 'stop';
+export type MultiRunControlAction = 'pause' | 'resume' | 'stop' | 'skip';
+
+export type MultiRunStreamEvent =
+  | { type: 'hydrate'; payload: MultiRunState; timestamp: string }
+  | MultiRunEvent;
 
 export type RunStreamEvent =
   | { type: 'hydrate'; payload: LiveRunState }
@@ -480,5 +489,64 @@ export const api = {
   deleteCredential: (id: string) =>
     fetchApi(`/credentials/${id}`, {
       method: 'DELETE'
-    })
+    }),
+
+  // ============================================
+  // Multi-Run (Run Builder) API
+  // ============================================
+
+  /**
+   * Get steps for a test (for step selection dropdown)
+   */
+  getTestSteps: (testId: string) =>
+    fetchApi<{ steps: ExtractedStep[] }>(`/tests/${testId}/steps`),
+
+  /**
+   * Start a multi-test run
+   */
+  startMultiRun: (config: RunConfiguration) =>
+    fetchApi<{ configId: string }>('/runs/multi', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    }),
+
+  /**
+   * Get multi-run state
+   */
+  getMultiRunState: (configId: string) =>
+    fetchApi<{ multiRun: MultiRunState }>(`/runs/multi/${configId}`),
+
+  /**
+   * Control multi-run (pause/resume/stop/skip)
+   */
+  controlMultiRun: (configId: string, action: MultiRunControlAction) =>
+    fetchApi<{ success: boolean }>(`/runs/multi/${configId}/control`, {
+      method: 'POST',
+      body: JSON.stringify({ action })
+    }),
+
+  /**
+   * Connect to multi-run SSE stream for real-time updates
+   */
+  connectToMultiRunStream: (
+    configId: string,
+    onEvent: (event: MultiRunStreamEvent) => void
+  ): EventSource => {
+    const source = new EventSource(`${API_BASE}/runs/multi/${configId}/stream`);
+
+    source.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(event.data) as MultiRunStreamEvent;
+        onEvent(parsed);
+      } catch (err) {
+        console.error('Failed to parse multi-run stream event', err);
+      }
+    };
+
+    source.onerror = (err) => {
+      console.error('Multi-run stream error', err);
+    };
+
+    return source;
+  }
 };

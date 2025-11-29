@@ -180,7 +180,7 @@ export default function TestWorkspace() {
   const [showCSVImport, setShowCSVImport] = useState(false);
 
   // Step editing state
-  const [editedSteps, setEditedSteps] = useState<Array<{ number: number; qaSummary: string; playwrightCode: string }>>([]);
+  const [editedSteps, setEditedSteps] = useState<Array<{ number: number; qaSummary: string; playwrightCode: string; screenshotPath?: string }>>([]);
   const [stepsModified, setStepsModified] = useState(false);
   const [savingSteps, setSavingSteps] = useState(false);
   const [insertAfterStep, setInsertAfterStep] = useState<number | null>(null);
@@ -1092,9 +1092,13 @@ export default function TestWorkspace() {
                 />
                 <span>
                   Show browser window (headed mode)
-                  {!headed && (
+                  {headed ? (
+                    <span className="mt-1 block text-xs text-emerald-600">
+                      Screenshots will be captured for each step.
+                    </span>
+                  ) : (
                     <span className="mt-1 block text-xs text-red-600">
-                      Screenshots are disabled while headless is selected.
+                      Screenshots are disabled in headless mode.
                     </span>
                   )}
                 </span>
@@ -1371,8 +1375,24 @@ export default function TestWorkspace() {
                               </div>
                             )}
 
-                            {/* Screenshots for this step */}
-                            {stepScreenshots.length > 0 && (
+                            {/* Screenshots for this step - show recorded screenshot or Playwright run screenshots */}
+                            {step.screenshotPath ? (
+                              <div className="mt-3">
+                                <a
+                                  href={`/api/tests/${testId}/screenshots/step-${step.number}.jpg`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-block"
+                                >
+                                  <img
+                                    src={`/api/tests/${testId}/screenshots/step-${step.number}.jpg`}
+                                    alt={`Step ${step.number} screenshot`}
+                                    className="max-w-xs rounded border border-gray-200 hover:border-blue-400 transition-colors"
+                                    loading="lazy"
+                                  />
+                                </a>
+                              </div>
+                            ) : stepScreenshots.length > 0 && (
                               <div className="mt-3 space-y-2">
                                 {stepScreenshots.map((shot, idx) => (
                                   <div key={`${shot.path}-${idx}`} className="flex items-center gap-3">
@@ -1455,6 +1475,23 @@ export default function TestWorkspace() {
                                     {step.playwrightCode}
                                   </pre>
                                 </details>
+                                {step.screenshotPath && (
+                                  <div className="mt-3">
+                                    <a
+                                      href={`/api/tests/${testId}/screenshots/step-${step.number}.jpg`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="block"
+                                    >
+                                      <img
+                                        src={`/api/tests/${testId}/screenshots/step-${step.number}.jpg`}
+                                        alt={`Step ${step.number} screenshot`}
+                                        className="max-w-sm rounded border border-gray-200 hover:border-blue-400 transition-colors"
+                                        loading="lazy"
+                                      />
+                                    </a>
+                                  </div>
+                                )}
                               </div>
                               <div className="flex flex-col gap-2">
                                 <button
