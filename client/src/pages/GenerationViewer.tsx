@@ -944,6 +944,7 @@ export default function GenerationViewer() {
   const stepMode = state?.mode === 'manual';
   const recordMode = state?.mode === 'record';
   const showGoalAndCriteria = state?.mode === 'auto';
+  const allowCredentialSelection = state?.mode === 'auto';
   const statusColors = {
     initializing: 'bg-yellow-100 text-yellow-800',
     running: 'bg-blue-100 text-blue-800',
@@ -1940,23 +1941,25 @@ export default function GenerationViewer() {
                   placeholder="Optional summary for teammates"
                 />
               </div>
-              <div>
-                <label className="text-sm font-medium text-gray-700">Default Credential</label>
-                <select
-                  value={saveForm.credentialId}
-                  onChange={(e) =>
-                    setSaveForm((prev) => ({ ...prev, credentialId: e.target.value }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">No credential</option>
-                  {credentials.map((credential) => (
-                    <option key={credential.id} value={credential.id}>
-                      {credential.name} · {credential.username}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {allowCredentialSelection && (
+                <div>
+                  <label className="text-sm font-medium text-gray-700">Default Credential</label>
+                  <select
+                    value={saveForm.credentialId}
+                    onChange={(e) =>
+                      setSaveForm((prev) => ({ ...prev, credentialId: e.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">No credential</option>
+                    {credentials.map((credential) => (
+                      <option key={credential.id} value={credential.id}>
+                        {credential.name} · {credential.username}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {saveModalError && (
                 <p className="text-sm text-red-600">{saveModalError}</p>
               )}
