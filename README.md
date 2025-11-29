@@ -10,6 +10,8 @@ Empower BA and QA staff to create professional browser automation tests without 
 - 💬 **AI Step-by-Step Mode** - Interactive chat interface to guide test creation with granular control
 - 🎥 **Record Mode** - Perform actions yourself while AI generates Playwright code automatically
 - 📊 **Data-Driven Testing** - Run tests with multiple variable sets using spreadsheet UI or CSV import
+- 🔑 **Credentials Management** - Store and reuse login credentials securely across tests
+- 🔗 **Run Builder** - Configure multi-test runs with ordering, browser reuse, and step selection
 - 👀 **Real-Time Viewer** - See each action as it happens with QA-friendly summaries
 - 🎯 **One-Click Execution** - Run tests and view results instantly
 - 🔍 **Playwright Trace Viewer** - Time-travel debugging with full trace support
@@ -91,6 +93,29 @@ Visit http://localhost:3000
 - AI generates parameterized Playwright tests
 - Later manage data in spreadsheet view or import CSV
 
+### Record Mode (Recommended for Demonstrations)
+
+**Perform actions in the browser and let AI generate the code:**
+
+1. Click "Create Test" → Select "Record Mode"
+2. Enter test name and starting URL
+3. Click "Start Recording"
+4. Browser opens with recording toolbar at top
+5. Perform your actions normally:
+   - Click buttons and links
+   - Type into input fields (Tab or click away to capture)
+   - Select dropdown options
+   - Navigate between pages
+6. Click "Stop Recording" in toolbar
+7. Review captured steps in viewer
+8. Delete any incorrect steps if needed
+9. Click "Save Test"
+
+**Best Practices:**
+- Go slow: Allow 1-2 seconds between actions
+- Tab out of inputs: Press Tab after typing to capture text
+- Keep tests focused: 5-15 steps per test
+
 ### Data-Driven Testing
 
 **Run the same test with multiple data sets:**
@@ -168,10 +193,26 @@ Instructions:
 3. "Add first result to cart"
 ```
 
+### Record Mode Examples
+
+**Form Submission:**
+```
+Mode: Record
+Name: Contact Form Test
+URL: https://example.com/contact
+
+Actions performed:
+1. Click name field, type "John Doe", Tab
+2. Click email field, type "john@example.com", Tab
+3. Click Submit button
+→ 3 steps captured with screenshots
+```
+
 ## Data Location
 
 All data is stored in `~/.trailwright/`:
 - `config.json` - Settings, API keys, provider selection
+- `credentials.json` - Saved login credentials
 - `tests/*.spec.ts` - Your test files with metadata
 - `test-data/*.csv` - Variable data for parameterized tests
 - `runs/` - Test results, traces, screenshots, videos
@@ -202,16 +243,22 @@ cd client && npm run preview
 TrailWright is a single-user, local-first application designed for non-technical users:
 
 - **Server**: Express + TypeScript backend
-  - Two AI modes: Self-driving (autonomous) and Step-by-step (interactive)
+  - Three test creation modes: Self-driving, Step-by-step, and Record
   - Iterative AI agent loop with accessibility tree capture
+  - CDP-based action recording for Record mode
   - Variable resolution and parameterized test generation
+  - Credentials management for reusable login data
+  - Multi-test Run Builder with browser reuse
   - Playwright test execution in headed mode
   - Server-Sent Events (SSE) for real-time updates
   - Multi-provider AI support (Anthropic, OpenAI, Gemini)
 - **Client**: Vite + React + Tailwind CSS frontend
   - Test creation wizard with mode selection
   - Interactive chat interface for step-by-step mode
+  - Record mode viewer with step management
+  - Run Builder drawer for multi-test configuration
   - Variable management with spreadsheet UI
+  - Credentials management UI
   - CSV import/export with column mapping
   - Live generation viewer with real-time streaming
   - Settings UI for API configuration
