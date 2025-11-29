@@ -72,10 +72,7 @@ coverage/
 *.lcov
 .nyc_output/
 
-#docs
+# Documentation (optional - included in README)
 docs/
 
 nul
-
-scripts/
-package-lock.json

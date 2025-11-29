@@ -2,7 +2,7 @@
 
 **AI-powered Playwright testing for non-technical users**
 
-Empower BA and QA staff to create professional browser automation tests without writing code. Choose your approach: let AI drive autonomously or guide it step-by-step through chat.
+Empower BA and QA staff to create professional browser automation tests without writing code. Choose your approach: let AI drive autonomously, guide it step-by-step through chat or record directly through interaction in the browser.
 
 ## Features
 
@@ -24,7 +24,7 @@ Empower BA and QA staff to create professional browser automation tests without 
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/marktl/TrailWrightQA.git
 cd TrailWrightQA
 
 # Install dependencies
