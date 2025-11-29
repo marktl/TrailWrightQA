@@ -11,6 +11,8 @@ export interface Config {
   anthropicModel?: string;
   openaiModel?: string;
   geminiModel?: string;
+  // Custom test directory (empty = default ~/.trailwright/tests)
+  testDirectory?: string;
 }
 
 // Available models for each provider
@@ -50,4 +52,27 @@ export async function saveConfig(dataDir: string, config: Partial<Config>): Prom
   const existing = await loadConfig(dataDir);
   const updated = { ...existing, ...config };
   await fs.writeFile(configPath, JSON.stringify(updated, null, 2));
+}
+
+/**
+ * Get the resolved tests directory path.
+ * If testDirectory is configured, use that; otherwise use default (dataDir/tests).
+ */
+export async function getTestsDirectory(dataDir: string): Promise<string> {
+  try {
+    const config = await loadConfig(dataDir);
+    if (config.testDirectory?.trim()) {
+      return config.testDirectory.trim();
+    }
+  } catch {
+    // Config doesn't exist yet, use default
+  }
+  return path.join(dataDir, 'tests');
+}
+
+/**
+ * Get the default tests directory path (for display in UI).
+ */
+export function getDefaultTestsDirectory(dataDir: string): string {
+  return path.join(dataDir, 'tests');
 }

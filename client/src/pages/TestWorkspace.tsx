@@ -1049,7 +1049,7 @@ export default function TestWorkspace() {
                     <>
                       <div className="flex items-center justify-between">
                         <p className="text-sm text-gray-600">
-                          Manage test data for parameterized tests. Variables must be defined during test creation.
+                          Manage test data for parameterized tests. Add variables in any creation mode to use this grid.
                         </p>
                         <button
                           onClick={() => setShowCSVImport(true)}

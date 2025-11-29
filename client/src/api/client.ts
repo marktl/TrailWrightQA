@@ -92,12 +92,35 @@ export async function fetchApi<T>(endpoint: string, options?: RequestInit): Prom
   return response.json();
 }
 
+export type TestDirectoryInfo = {
+  testDirectory: string;
+  resolvedTestsDirectory: string;
+  defaultTestsDirectory: string;
+  testCount: number;
+  isCustom: boolean;
+};
+
+export type TestDirectoryChangeResult = {
+  success: boolean;
+  message: string;
+  testDirectory?: string;
+  resolvedTestsDirectory: string;
+  movedCount?: number;
+  testCount?: number;
+};
+
 export const api = {
   getConfig: () => fetchApi<any>('/config'),
   saveConfig: (config: any) =>
     fetchApi('/config', {
       method: 'POST',
       body: JSON.stringify(config)
+    }),
+  getTestDirectoryInfo: () => fetchApi<TestDirectoryInfo>('/config/test-directory'),
+  changeTestDirectory: (newPath: string, moveTests: boolean) =>
+    fetchApi<TestDirectoryChangeResult>('/config/test-directory', {
+      method: 'POST',
+      body: JSON.stringify({ newPath, moveTests })
     }),
   healthCheck: () => fetchApi<{ status: string; timestamp: string }>('/health'),
   listTests: () => fetchApi<{ tests: ApiTestMetadata[] }>('/tests'),

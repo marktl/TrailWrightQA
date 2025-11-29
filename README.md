@@ -18,24 +18,47 @@ Empower BA and QA staff to create professional browser automation tests without 
 - 💾 **File-Based Storage** - No database required, everything in `~/.trailwright/`
 - 🔒 **Local-Only** - All data stays on your machine, API keys never leave your system
 - 🚀 **Zero Config** - Works out of the box with sensible defaults
-- 🎨 **Multiple AI Providers** - Supports Anthropic Claude, OpenAI GPT-4o, Google Gemini
+- 🎨 **Multiple AI Providers** - Supports Anthropic Claude, OpenAI GPT, Google Gemini
 
-## Quick Start
+## Quick Start (Windows)
+
+### Step 1: Install Node.js (one-time)
+Download and install from [nodejs.org](https://nodejs.org/) - choose the **LTS** version.
+
+### Step 2: Download TrailWright
+1. Go to [github.com/marktl/TrailWrightQA](https://github.com/marktl/TrailWrightQA)
+2. Click the green **Code** button
+3. Click **Download ZIP**
+4. Extract the ZIP to a folder (e.g., `C:\TrailWrightQA`)
+
+### Step 3: Run
+Double-click **start.bat** in the extracted folder.
+
+First run will take a few minutes to install dependencies. Once you see "Started", open http://localhost:3000 in your browser.
+
+---
+
+<details>
+<summary><strong>Mac/Linux Instructions</strong></summary>
+
+1. Install Node.js: `brew install node` (Mac) or `sudo apt install nodejs npm` (Ubuntu)
+2. Download and extract the ZIP from GitHub
+3. Open Terminal in the extracted folder
+4. Run: `chmod +x start.sh && ./start.sh`
+
+</details>
+
+<details>
+<summary><strong>Developer Setup (with Git)</strong></summary>
 
 ```bash
-# Clone the repository
 git clone https://github.com/marktl/TrailWrightQA.git
 cd TrailWrightQA
-
-# Install dependencies
-npm install
-npm run setup   # installs server/ and client/ packages too
-
-# Start the application
+npm install && npm run setup
 npm run dev
 ```
 
-Visit http://localhost:3000
+</details>
 
 ## First-Time Setup
 

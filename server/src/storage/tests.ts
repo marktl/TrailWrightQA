@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import type { Test, TestMetadata } from '../types.js';
+import { getTestsDirectory } from './config.js';
 
 const METADATA_DELIMITER = '// === TRAILWRIGHT_METADATA ===';
 
@@ -30,21 +31,22 @@ function parseTest(content: string, testId: string): Test {
 }
 
 export async function saveTest(dataDir: string, test: Test): Promise<void> {
-  const testsDir = path.join(dataDir, 'tests');
+  const testsDir = await getTestsDirectory(dataDir);
+  await fs.mkdir(testsDir, { recursive: true });
   const filePath = path.join(testsDir, `${test.metadata.id}.spec.ts`);
   const content = serializeTest(test);
   await fs.writeFile(filePath, content, 'utf-8');
 }
 
 export async function loadTest(dataDir: string, testId: string): Promise<Test> {
-  const testsDir = path.join(dataDir, 'tests');
+  const testsDir = await getTestsDirectory(dataDir);
   const filePath = path.join(testsDir, `${testId}.spec.ts`);
   const content = await fs.readFile(filePath, 'utf-8');
   return parseTest(content, testId);
 }
 
 export async function listTests(dataDir: string): Promise<TestMetadata[]> {
-  const testsDir = path.join(dataDir, 'tests');
+  const testsDir = await getTestsDirectory(dataDir);
 
   try {
     const files = await fs.readdir(testsDir);
@@ -67,7 +69,7 @@ export async function listTests(dataDir: string): Promise<TestMetadata[]> {
 }
 
 export async function deleteTest(dataDir: string, testId: string): Promise<void> {
-  const testsDir = path.join(dataDir, 'tests');
+  const testsDir = await getTestsDirectory(dataDir);
   const filePath = path.join(testsDir, `${testId}.spec.ts`);
   await fs.unlink(filePath);
 }

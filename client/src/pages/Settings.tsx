@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
-import type { ApiCredential } from '../api/client';
+import type { ApiCredential, TestDirectoryInfo } from '../api/client';
 
 type Config = {
   apiProvider: 'anthropic' | 'openai' | 'gemini';
@@ -67,9 +67,17 @@ export default function Settings() {
   const [savingCredential, setSavingCredential] = useState(false);
   const [revealedCredentialId, setRevealedCredentialId] = useState<string | null>(null);
 
+  // Test directory state
+  const [testDirInfo, setTestDirInfo] = useState<TestDirectoryInfo | null>(null);
+  const [newTestDirectory, setNewTestDirectory] = useState('');
+  const [showTestDirConfirm, setShowTestDirConfirm] = useState(false);
+  const [savingTestDir, setSavingTestDir] = useState(false);
+  const [testDirMessage, setTestDirMessage] = useState('');
+
   useEffect(() => {
     loadConfig();
     loadCredentials();
+    loadTestDirectoryInfo();
 
     const refreshTimer = setTimeout(() => {
       loadConfig();
@@ -105,6 +113,31 @@ export default function Settings() {
       setCredentialMessage('Unable to load credentials');
     } finally {
       setLoadingCredentials(false);
+    }
+  }
+
+  async function loadTestDirectoryInfo() {
+    try {
+      const info = await api.getTestDirectoryInfo();
+      setTestDirInfo(info);
+      setNewTestDirectory(info.testDirectory || '');
+    } catch (err) {
+      console.error('Failed to load test directory info:', err);
+    }
+  }
+
+  async function handleChangeTestDirectory(moveTests: boolean) {
+    setSavingTestDir(true);
+    setTestDirMessage('');
+    try {
+      const result = await api.changeTestDirectory(newTestDirectory, moveTests);
+      setTestDirMessage(result.message);
+      setShowTestDirConfirm(false);
+      await loadTestDirectoryInfo();
+    } catch (err: any) {
+      setTestDirMessage('Error: ' + (err?.message || 'Failed to change directory'));
+    } finally {
+      setSavingTestDir(false);
     }
   }
 
@@ -325,6 +358,125 @@ export default function Settings() {
             )}
           </div>
         </div>
+
+        {/* Test Storage Location */}
+        <div className="mt-8 bg-white rounded-lg shadow p-6">
+          <h2 className="text-2xl font-semibold text-gray-900 mb-2">Test Storage Location</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Choose where your test files (.spec.ts) are saved on disk.
+          </p>
+
+          {testDirInfo && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Current Location
+                </label>
+                <div className="px-4 py-2 bg-gray-100 rounded-lg text-sm font-mono break-all">
+                  {testDirInfo.resolvedTestsDirectory}
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  {testDirInfo.testCount} test{testDirInfo.testCount !== 1 ? 's' : ''} stored
+                  {testDirInfo.isCustom && ' (custom location)'}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  New Location
+                </label>
+                <input
+                  type="text"
+                  value={newTestDirectory}
+                  onChange={(e) => setNewTestDirectory(e.target.value)}
+                  placeholder={testDirInfo.defaultTestsDirectory}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Leave empty to use default location. Enter full path for custom location.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    const normalizedNew = newTestDirectory.trim();
+                    const normalizedCurrent = testDirInfo.testDirectory || '';
+                    if (normalizedNew !== normalizedCurrent && testDirInfo.testCount > 0) {
+                      setShowTestDirConfirm(true);
+                    } else {
+                      handleChangeTestDirectory(false);
+                    }
+                  }}
+                  disabled={savingTestDir || (newTestDirectory.trim() === (testDirInfo.testDirectory || ''))}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                >
+                  {savingTestDir ? 'Saving...' : 'Change Location'}
+                </button>
+                {testDirInfo.isCustom && (
+                  <button
+                    onClick={() => {
+                      setNewTestDirectory('');
+                      if (testDirInfo.testCount > 0) {
+                        setShowTestDirConfirm(true);
+                      } else {
+                        handleChangeTestDirectory(false);
+                      }
+                    }}
+                    disabled={savingTestDir}
+                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 text-sm"
+                  >
+                    Reset to Default
+                  </button>
+                )}
+              </div>
+
+              {testDirMessage && (
+                <p className={`text-sm ${testDirMessage.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+                  {testDirMessage}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Confirmation Modal */}
+        {showTestDirConfirm && testDirInfo && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                Move Existing Tests?
+              </h3>
+              <p className="text-sm text-gray-600 mb-4">
+                You have {testDirInfo.testCount} test{testDirInfo.testCount !== 1 ? 's' : ''} in the current location.
+                Would you like to move them to the new location?
+              </p>
+              <div className="space-y-3">
+                <button
+                  onClick={() => handleChangeTestDirectory(true)}
+                  disabled={savingTestDir}
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {savingTestDir ? 'Moving...' : 'Move Tests to New Location'}
+                </button>
+                <button
+                  onClick={() => handleChangeTestDirectory(false)}
+                  disabled={savingTestDir}
+                  className="w-full px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Keep Tests in Current Location
+                </button>
+                <button
+                  onClick={() => setShowTestDirConfirm(false)}
+                  disabled={savingTestDir}
+                  className="w-full px-4 py-2 text-gray-500 hover:text-gray-700 text-sm"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-8 bg-white rounded-lg shadow p-6">
           <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

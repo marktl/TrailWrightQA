@@ -73,6 +73,11 @@ async function persistGeneratorTest(
   const testId = options.id || existing?.id || `ai-${generator.id}`;
   const testName = options.name?.trim() || existing?.name || formatAutoTestName(state.goal);
 
+  const isManual = generator.isManualMode();
+  const incomingDescription = options.description?.trim() || existing?.description;
+  const incomingPrompt = options.prompt?.trim() || existing?.prompt;
+  const incomingSuccess = options.successCriteria?.trim() || existing?.successCriteria;
+
   // Get variables from generator if not provided in options
   const generatorVariables = generator.getVariables();
   const variables = options.variables || (generatorVariables.length > 0
@@ -86,12 +91,14 @@ async function persistGeneratorTest(
   const metadata: TestMetadata = {
     id: testId,
     name: testName,
-    description:
-      options.description?.trim() || existing?.description || `Goal: ${state.goal}`,
+    description: isManual
+      ? incomingDescription
+      : incomingDescription || `Goal: ${state.goal}`,
     tags: summarizeTags(options.tags ?? existing?.tags),
-    prompt: options.prompt?.trim() || state.goal,
-    successCriteria:
-      options.successCriteria?.trim() || existing?.successCriteria || state.successCriteria,
+    prompt: isManual ? incomingPrompt : incomingPrompt || state.goal,
+    successCriteria: isManual
+      ? incomingSuccess
+      : incomingSuccess || state.successCriteria,
     folder: options.folder ?? existing?.folder,
     credentialId: options.credentialId ?? state.credentialId,
     startUrl: state.startUrl,
@@ -821,10 +828,6 @@ router.post('/:sessionId/variables', (req, res) => {
 
   if (!generator) {
     return res.status(404).json({ error: 'Session not found' });
-  }
-
-  if (!generator.isManualMode()) {
-    return res.status(400).json({ error: 'Variables are only supported in step-by-step mode' });
   }
 
   try {

@@ -119,10 +119,8 @@ export default function GenerationViewer() {
         void hydrateSavedTest(initialState.savedTestId);
       }
 
-      // Load variables if in manual mode
-      if (initialState.mode === 'manual') {
-        void loadVariables();
-      }
+      // Load variables for all modes
+      void loadVariables();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load generation state';
       setError(message);
@@ -945,6 +943,7 @@ export default function GenerationViewer() {
 
   const stepMode = state?.mode === 'manual';
   const recordMode = state?.mode === 'record';
+  const showGoalAndCriteria = state?.mode === 'auto';
   const statusColors = {
     initializing: 'bg-yellow-100 text-yellow-800',
     running: 'bg-blue-100 text-blue-800',
@@ -1133,10 +1132,10 @@ export default function GenerationViewer() {
               )}
             </div>
             <div className="mt-4 space-y-3">
-              {(!stepMode || !sessionConfigEditing) && (
+              {showGoalAndCriteria && (
                 <div>
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                    {stepMode ? 'Description' : 'Goal'}
+                    Goal
                   </p>
                   {sessionConfigEditing ? (
                     <textarea
@@ -1151,7 +1150,7 @@ export default function GenerationViewer() {
                   )}
                 </div>
               )}
-              {!stepMode && (
+              {showGoalAndCriteria && (
                 <>
                   <div>
                     <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
@@ -1301,7 +1300,7 @@ export default function GenerationViewer() {
             </div>
           )}
 
-          {state?.successCriteria && (
+          {showGoalAndCriteria && state?.successCriteria && (
             <div className="mt-4 p-3 bg-green-50 border border-green-100 rounded-lg">
               <p className="text-xs font-semibold uppercase tracking-wide text-green-700">
                 Success Criteria
@@ -1342,7 +1341,7 @@ export default function GenerationViewer() {
             )}
           </div>
 
-          {!stepMode && (
+          {showGoalAndCriteria && (
             <div className="mb-4 rounded-lg border border-gray-100 bg-gray-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">
                 Original Prompt
@@ -1628,22 +1627,20 @@ export default function GenerationViewer() {
             )}
           </div>
 
-          {/* Variable Panel - Only show in manual mode */}
-          {stepMode && (
-            <div className="mt-6 pt-4 border-t border-gray-200">
-              <VariablePanel
-                variables={variables}
-                onAddVariable={handleAddVariable}
-                onDeleteVariable={handleDeleteVariable}
-                disabled={composerDisabled || sendingChat}
-              />
-              {variablesError && (
-                <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-                  {variablesError}
-                </div>
-              )}
-            </div>
-          )}
+          {/* Variable Panel */}
+          <div className="mt-6 pt-4 border-t border-gray-200">
+            <VariablePanel
+              variables={variables}
+              onAddVariable={handleAddVariable}
+              onDeleteVariable={handleDeleteVariable}
+              disabled={composerDisabled || sendingChat}
+            />
+            {variablesError && (
+              <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                {variablesError}
+              </div>
+            )}
+          </div>
 
           {/* Logs Section (Collapsed) */}
           <div className="mt-6 border-t pt-4">
@@ -1716,6 +1713,26 @@ export default function GenerationViewer() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {recordMode && (
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">Variables</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Capture test data for recorded flows. Add variables now to generate parameterized Playwright code when you save.
+            </p>
+            <VariablePanel
+              variables={variables}
+              onAddVariable={handleAddVariable}
+              onDeleteVariable={handleDeleteVariable}
+              disabled={isStopping}
+            />
+            {variablesError && (
+              <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+                {variablesError}
+              </div>
+            )}
           </div>
         )}
 
