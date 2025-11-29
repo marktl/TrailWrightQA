@@ -189,9 +189,8 @@ export default function GenerateStart() {
         <div>
           <div className="flex items-center gap-3">
             <img src="/favicon.png" alt="TrailWright Logo" className="h-8 w-8 object-contain" />
-            <h1 className="text-3xl font-bold text-gray-900">Generate with AI</h1>
+            <h1 className="text-3xl font-bold text-gray-900">Generate Test</h1>
           </div>
-          <p className="text-sm text-gray-600">Describe the workflow once — TrailWright handles the rest.</p>
         </div>
         <button
           onClick={() => navigate('/')}
@@ -465,22 +464,20 @@ export default function GenerateStart() {
                 </label>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {mode === 'record' ? 'Description (optional)' : 'Success Criteria (optional)'}
-                </label>
-                <textarea
-                  value={successCriteria}
-                  onChange={(e) => setSuccessCriteria(e.target.value)}
-                  rows={mode === 'record' ? 2 : 3}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder={
-                    mode === 'record'
-                      ? 'Add context for your recording'
-                      : 'What must be true for the test to succeed? (e.g., "shows order confirmation page")'
-                  }
-                />
-              </div>
+              {mode === 'auto' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Success Criteria (optional)
+                  </label>
+                  <textarea
+                    value={successCriteria}
+                    onChange={(e) => setSuccessCriteria(e.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder='What must be true for the test to succeed? (e.g., "shows order confirmation page")'
+                  />
+                </div>
+              )}
             </>
           )}
 
