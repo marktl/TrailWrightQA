@@ -241,6 +241,50 @@ All data is stored in `~/.trailwright/`:
 - `runs/` - Test results, traces, screenshots, videos
 - `playwright.config.ts` - Auto-generated Playwright configuration
 
+### Custom Data Location
+
+You can customize where TrailWright stores all its data using environment variables:
+
+**`TRAILWRIGHT_DATA_DIR`** - Controls the base data directory (default: `~/.trailwright`)
+
+This moves everything: config, credentials, API keys, test variables, run results, and tests.
+
+```batch
+:: Windows - store all data on D: drive
+set TRAILWRIGHT_DATA_DIR=D:\TrailWrightData
+start.bat
+
+:: Mac/Linux
+TRAILWRIGHT_DATA_DIR=/path/to/data ./start.sh
+```
+
+**`TRAILWRIGHT_TESTS_DIR`** - Controls only the test file location (optional)
+
+Use this if you want tests in a different location than other data (e.g., in a git repo).
+
+```batch
+:: Windows - tests in a separate location
+set TRAILWRIGHT_DATA_DIR=D:\TrailWrightData
+set TRAILWRIGHT_TESTS_DIR=D:\MyProject\tests
+start.bat
+
+:: Mac/Linux
+TRAILWRIGHT_DATA_DIR=/data TRAILWRIGHT_TESTS_DIR=/project/tests ./start.sh
+```
+
+Environment variables are applied on first run, or when config doesn't already have a custom directory set.
+
+**Settings UI (anytime)**
+
+You can also change the test directory via Settings:
+1. Go to Settings
+2. Find "Test Storage Location" section
+3. Enter your desired path
+4. Click "Change Location"
+5. Choose whether to move existing tests
+
+When changing directories with existing tests, you'll be prompted to either move them to the new location or keep them in place.
+
 ## Tech Stack
 
 - **Backend**: Node.js, Express, TypeScript, Playwright

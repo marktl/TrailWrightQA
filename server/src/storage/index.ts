@@ -84,22 +84,52 @@ export async function initStorage(dataDir: string): Promise<void> {
   const testDataDir = path.join(dataDir, 'test-data');
   const configPath = path.join(dataDir, 'config.json');
 
+  // Check for custom test directory from environment variable
+  const envTestsDir = process.env.TRAILWRIGHT_TESTS_DIR?.trim();
+
   // Create directories
   await fs.mkdir(testsDir, { recursive: true });
   await fs.mkdir(runsDir, { recursive: true });
   await fs.mkdir(testDataDir, { recursive: true });
 
+  // If custom test directory is set via env var, ensure it exists
+  if (envTestsDir) {
+    await fs.mkdir(envTestsDir, { recursive: true });
+  }
+
   // Create default config if doesn't exist
+  let configExists = false;
   try {
     await fs.access(configPath);
+    configExists = true;
   } catch {
-    const defaultConfig = {
+    const defaultConfig: Record<string, any> = {
       apiProvider: 'anthropic',
       apiKey: '',
       defaultBrowser: 'chromium',
       createdAt: new Date().toISOString()
     };
+    // Apply env var test directory on first run
+    if (envTestsDir) {
+      defaultConfig.testDirectory = envTestsDir;
+      console.log(`[storage] Using custom test directory from TRAILWRIGHT_TESTS_DIR: ${envTestsDir}`);
+    }
     await fs.writeFile(configPath, JSON.stringify(defaultConfig, null, 2));
+  }
+
+  // If config exists but testDirectory not set, and env var is provided, update config
+  if (configExists && envTestsDir) {
+    try {
+      const configContent = await fs.readFile(configPath, 'utf-8');
+      const config = JSON.parse(configContent);
+      if (!config.testDirectory) {
+        config.testDirectory = envTestsDir;
+        await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+        console.log(`[storage] Applied TRAILWRIGHT_TESTS_DIR to existing config: ${envTestsDir}`);
+      }
+    } catch (err) {
+      console.error('[storage] Failed to update config with TRAILWRIGHT_TESTS_DIR:', err);
+    }
   }
 
   // Ensure Playwright dependencies are installed
