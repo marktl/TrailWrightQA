@@ -9,6 +9,8 @@ export class RecordingCapture extends EventEmitter {
   private listenersInjected = false;
   private stepCounter = 0;
   private activeInputs = new Map<string, { value: string; startTime: number; element: any }>();
+  private initialNavigationDone = false;
+  private navigationHandler?: (frame: any) => Promise<void>;
 
   constructor(page: Page, private startingStepNumber: number = 1) {
     super();
@@ -25,6 +27,10 @@ export class RecordingCapture extends EventEmitter {
       await this.injectEventListeners();
       this.listenersInjected = true;
     }
+
+    // Mark initial navigation as done since page is already loaded
+    // This ensures we capture user-triggered navigations but not spurious events
+    this.initialNavigationDone = true;
 
     this.emit('started');
   }
@@ -147,6 +153,41 @@ export class RecordingCapture extends EventEmitter {
     `;
 
     await (this.page as any).addInitScript(eventListenerScript);
+
+    // Add navigation listener
+    this.navigationHandler = async (frame: any) => {
+      if (!this.isRecording) return;
+      await this.handleNavigationEvent(frame);
+    };
+    this.page.on('framenavigated', this.navigationHandler);
+  }
+
+  private async handleNavigationEvent(frame: any): Promise<void> {
+    // Skip initial navigation
+    if (!this.initialNavigationDone) {
+      this.initialNavigationDone = true;
+      return;
+    }
+
+    // Only capture main frame navigations
+    const mainFrame = this.page.mainFrame();
+    if (frame !== mainFrame) return;
+
+    const url = frame.url();
+    const screenshotData = await this.captureScreenshot();
+
+    const step: RecordedStep = {
+      stepNumber: ++this.stepCounter,
+      interactionType: 'navigate',
+      elementInfo: { selector: '' },
+      qaSummary: `Navigate to ${url}`,
+      playwrightCode: `await page.goto('${url}');`,
+      timestamp: new Date().toISOString(),
+      url,
+      screenshotData
+    };
+
+    this.emit('step', step);
   }
 
   private async handleClickEvent(data: any): Promise<void> {
