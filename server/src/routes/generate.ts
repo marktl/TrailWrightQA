@@ -945,6 +945,46 @@ router.post('/:sessionId/resume', async (req, res) => {
 });
 
 /**
+ * Start hybrid recording mode during AI session
+ */
+router.post('/:sessionId/hybrid-record/start', async (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    await generator.startHybridRecording();
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    console.error(`[generate] Start hybrid recording error for session ${sessionId}:`, error);
+    res.status(400).json({ error: error.message || 'Failed to start hybrid recording' });
+  }
+});
+
+/**
+ * Stop hybrid recording mode
+ */
+router.post('/:sessionId/hybrid-record/stop', async (req, res) => {
+  const { sessionId } = req.params;
+  const generator = sessions.get(sessionId);
+
+  if (!generator) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+
+  try {
+    await generator.stopHybridRecording();
+    res.json({ success: true, state: generator.getState() });
+  } catch (error: any) {
+    console.error(`[generate] Stop hybrid recording error for session ${sessionId}:`, error);
+    res.status(400).json({ error: error.message || 'Failed to stop hybrid recording' });
+  }
+});
+
+/**
  * Update a specific step in the recording
  */
 router.put('/:sessionId/steps/:stepNumber', async (req, res) => {
