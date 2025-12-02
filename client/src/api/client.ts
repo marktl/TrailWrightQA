@@ -495,6 +495,16 @@ export const api = {
     return source;
   },
 
+  // Hybrid Recording
+  startHybridRecording: (sessionId: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/hybrid-record/start`, {
+      method: 'POST'
+    }),
+  stopHybridRecording: (sessionId: string) =>
+    fetchApi<{ success: boolean; state: LiveGenerationState }>(`/generate/${sessionId}/hybrid-record/stop`, {
+      method: 'POST'
+    }),
+
   listCredentials: () => fetchApi<{ credentials: ApiCredential[] }>('/credentials'),
   createCredential: (credential: { name: string; username: string; password: string; notes?: string }) =>
     fetchApi<{ credential: ApiCredential }>('/credentials', {
