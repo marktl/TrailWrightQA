@@ -71,6 +71,11 @@ export default function GenerationViewer() {
   const [pickingElement, setPickingElement] = useState(false);
   const [pickElementError, setPickElementError] = useState<string | null>(null);
 
+  // Hybrid recording state
+  const [isHybridRecording, setIsHybridRecording] = useState(false);
+  const [startingHybridRecord, setStartingHybridRecord] = useState(false);
+  const [stoppingHybridRecord, setStoppingHybridRecord] = useState(false);
+
   function addCategoryOption(name?: string | null) {
     const trimmed = name?.trim();
     if (!trimmed) {
@@ -112,6 +117,7 @@ export default function GenerationViewer() {
       setSessionConfigPrompt(initialState.goal);
       setSessionConfigMaxSteps(String(initialState.maxSteps ?? ''));
       setSessionConfigUrl(initialState.startUrl || '');
+      setIsHybridRecording(initialState.isHybridRecording || false);
       if (initialState.error) {
         setError(initialState.error);
       }
@@ -293,6 +299,16 @@ export default function GenerationViewer() {
 
       case 'error':
         setError(event.payload.message);
+        break;
+
+      case 'hybrid_recording_started':
+        setIsHybridRecording(true);
+        setState((prev) => prev ? { ...prev, isHybridRecording: true } : null);
+        break;
+
+      case 'hybrid_recording_stopped':
+        setIsHybridRecording(false);
+        setState((prev) => prev ? { ...prev, isHybridRecording: false } : null);
         break;
 
       default:
@@ -658,6 +674,38 @@ export default function GenerationViewer() {
       setPickElementError(message);
     } finally {
       setPickingElement(false);
+    }
+  }
+
+  async function handleStartHybridRecording() {
+    if (!sessionId || startingHybridRecord) return;
+
+    try {
+      setStartingHybridRecord(true);
+      const { state: newState } = await api.startHybridRecording(sessionId);
+      setState(newState);
+      setIsHybridRecording(true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to start recording';
+      setError(message);
+    } finally {
+      setStartingHybridRecord(false);
+    }
+  }
+
+  async function handleStopHybridRecording() {
+    if (!sessionId || stoppingHybridRecord) return;
+
+    try {
+      setStoppingHybridRecord(true);
+      const { state: newState } = await api.stopHybridRecording(sessionId);
+      setState(newState);
+      setIsHybridRecording(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to stop recording';
+      setError(message);
+    } finally {
+      setStoppingHybridRecord(false);
     }
   }
 
@@ -1244,6 +1292,29 @@ export default function GenerationViewer() {
                 >
                   {isPausing ? 'Pausing…' : 'Pause'}
                 </button>
+              )}
+              {/* Hybrid Record Button - show for auto/manual modes when not in pure record mode */}
+              {state?.mode !== 'record' && (
+                isHybridRecording ? (
+                  <button
+                    onClick={handleStopHybridRecording}
+                    disabled={stoppingHybridRecord}
+                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <span className="w-3 h-3 bg-white rounded-full animate-pulse" />
+                    {stoppingHybridRecord ? 'Stopping...' : 'Stop Recording'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStartHybridRecording}
+                    disabled={startingHybridRecord || state?.status === 'thinking'}
+                    className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50 flex items-center gap-2"
+                    title="Manually record steps when AI struggles with element identification"
+                  >
+                    <span className="w-3 h-3 bg-red-500 rounded-full" />
+                    {startingHybridRecord ? 'Starting...' : 'Record Steps'}
+                  </button>
+                )
               )}
               {canStop && (
                 <button
