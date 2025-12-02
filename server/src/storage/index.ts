@@ -47,6 +47,9 @@ async function ensurePlaywrightDependencies(dataDir: string): Promise<void> {
   const npx = await resolveNpxInvocation();
   const baseEnv = npx.env ?? process.env;
 
+  // Ensure dataDir exists before spawning (spawn requires cwd to exist)
+  await fs.mkdir(dataDir, { recursive: true });
+
   return new Promise((resolve, reject) => {
     const proc = spawn(
       npx.command,
@@ -54,7 +57,8 @@ async function ensurePlaywrightDependencies(dataDir: string): Promise<void> {
       {
         cwd: dataDir,
         env: { ...baseEnv },
-        stdio: 'pipe'
+        stdio: 'pipe',
+        shell: process.platform === 'win32'
       }
     );
 
