@@ -29,6 +29,7 @@ import type { AIProvider } from '../ai/index.js';
 import { CONFIG } from '../config.js';
 import { PlaywrightMCPAdapter } from './mcpAdapter.js';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { RecordingCapture } from './recordingCapture.js';
 
 const DEFAULT_MAX_STEPS = 20;
 
@@ -92,6 +93,10 @@ export class LiveTestGenerator extends EventEmitter {
   private pendingPlan?: StepPlan; // For manual mode: plan awaiting user approval
   private pickedSelector?: string; // Stores selector from visual element picker
   private mcpAdapter?: PlaywrightMCPAdapter;
+  private recordingCapture?: RecordingCapture;
+  private isHybridRecording = false;
+  private hybridRecordingIndicatorInjected = false;
+  private hybridRecordingStartCount = 0;
 
   constructor(
     options: LiveGenerationOptions,
@@ -167,7 +172,8 @@ export class LiveTestGenerator extends EventEmitter {
         }
         : undefined,
       mode: this.mode,
-      pendingPlan: this.pendingPlan
+      pendingPlan: this.pendingPlan,
+      isHybridRecording: this.isHybridRecording
     };
   }
 
@@ -1356,6 +1362,169 @@ export class LiveTestGenerator extends EventEmitter {
       this.page = null;
       this.log('Browser closed on session cleanup.');
     }
+  }
+
+  /**
+   * Start hybrid recording mode - pause AI and capture user actions
+   */
+  async startHybridRecording(): Promise<void> {
+    if (!this.page) {
+      throw new Error('Page not initialized');
+    }
+
+    if (this.isHybridRecording) {
+      throw new Error('Already in hybrid recording mode');
+    }
+
+    // Pause AI loop if running
+    if (this.isRunning) {
+      this.isPaused = true;
+    }
+
+    this.isHybridRecording = true;
+
+    // Initialize recording capture if needed
+    if (!this.recordingCapture) {
+      this.recordingCapture = new RecordingCapture(this.page, this.nextStepNumber);
+
+      // Forward step events
+      this.recordingCapture.on('step', (step: RecordedStep) => {
+        this.recordedSteps.push(step);
+        this.nextStepNumber = this.recordedSteps.length + 1;
+        this.recordingCapture?.setStepCounter(this.nextStepNumber - 1);
+
+        this.log(`🔴 Recorded: ${step.qaSummary}`);
+
+        this.emit('event', {
+          type: 'step_recorded',
+          timestamp: new Date().toISOString(),
+          payload: step
+        });
+      });
+    } else {
+      this.recordingCapture.setStepCounter(this.nextStepNumber - 1);
+    }
+
+    this.hybridRecordingStartCount = this.recordedSteps.length;
+    await this.recordingCapture.start();
+    await this.injectRecordingIndicator();
+
+    this.log('🔴 Hybrid recording started - perform actions in browser');
+    this.addChatMessage('assistant', '🔴 Recording mode active. Perform your actions in the browser. Click "Stop Recording" when done.');
+
+    this.emit('event', {
+      type: 'hybrid_recording_started',
+      timestamp: new Date().toISOString(),
+      payload: {}
+    });
+
+    this.touch();
+  }
+
+  /**
+   * Stop hybrid recording mode and resume AI capability
+   */
+  async stopHybridRecording(): Promise<void> {
+    if (!this.isHybridRecording) {
+      throw new Error('Not in hybrid recording mode');
+    }
+
+    this.isHybridRecording = false;
+
+    if (this.recordingCapture) {
+      await this.recordingCapture.stop();
+    }
+
+    await this.removeRecordingIndicator();
+
+    const stepsRecorded = this.recordedSteps.length - this.hybridRecordingStartCount;
+    this.log(`⏹️ Hybrid recording stopped - ${stepsRecorded} step(s) captured`);
+    this.addChatMessage('assistant', `Recording stopped. ${stepsRecorded} step(s) added. You can continue with AI assistance or record more steps.`);
+
+    // Resume paused state for manual input
+    if (this.isManualMode()) {
+      this.enterManualAwaitingState();
+    } else {
+      this.isPaused = false;
+    }
+
+    this.emit('event', {
+      type: 'hybrid_recording_stopped',
+      timestamp: new Date().toISOString(),
+      payload: { stepsRecorded }
+    });
+
+    this.touch();
+  }
+
+  /**
+   * Check if currently in hybrid recording mode
+   */
+  isInHybridRecording(): boolean {
+    return this.isHybridRecording;
+  }
+
+  private async injectRecordingIndicator(): Promise<void> {
+    if (!this.page || this.hybridRecordingIndicatorInjected) return;
+
+    const indicatorHtml = `
+      <div id="tw-hybrid-record-indicator" style="
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        color: white;
+        padding: 8px 16px;
+        border-radius: 20px;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      ">
+        <span style="
+          width: 10px;
+          height: 10px;
+          background: white;
+          border-radius: 50%;
+          animation: tw-pulse 1.5s infinite;
+        "></span>
+        Recording...
+      </div>
+      <style>
+        @keyframes tw-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      </style>
+    `;
+
+    await this.page.evaluate((html) => {
+      // @ts-ignore - document exists in browser context
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = html;
+      while (wrapper.firstChild) {
+        // @ts-ignore - document exists in browser context
+        document.body.appendChild(wrapper.firstChild);
+      }
+    }, indicatorHtml);
+
+    this.hybridRecordingIndicatorInjected = true;
+  }
+
+  private async removeRecordingIndicator(): Promise<void> {
+    if (!this.page) return;
+
+    await this.page.evaluate(() => {
+      // @ts-ignore - document exists in browser context
+      const indicator = document.getElementById('tw-hybrid-record-indicator');
+      if (indicator) indicator.remove();
+    });
+
+    this.hybridRecordingIndicatorInjected = false;
   }
 
   markTestPersisted(metadata: TestMetadata): void {

@@ -439,7 +439,8 @@ export async function startLiveRun(
 
   const proc = spawn(npx.command, args, {
     cwd: context.dataDir,
-    env
+    env,
+    shell: true
   });
 
   const session = new LiveRunSession(context, proc);

@@ -230,6 +230,7 @@ export interface LiveGenerationState {
   };
   mode: GenerationMode;
   pendingPlan?: StepPlan; // For manual mode: plan awaiting approval
+  isHybridRecording?: boolean;
   // Record mode-specific fields
   recordingActive?: boolean;
   assertionPickerActive?: boolean;
@@ -271,6 +272,8 @@ export type LiveGenerationEventType =
   | 'plan_rejected'
   | 'completed'
   | 'auto_saved'
+  | 'hybrid_recording_started'
+  | 'hybrid_recording_stopped'
   | 'error';
 
 export interface LiveGenerationEvent {

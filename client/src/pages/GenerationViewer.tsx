@@ -1601,8 +1601,8 @@ export default function GenerationViewer() {
               </button>
             </div>
 
-            {/* Element Picker Button - Only show in manual mode */}
-            {stepMode && (
+            {/* Element Picker Button - Show in manual mode or when auto mode is paused */}
+            {(stepMode || isPaused) && (
               <div className="mt-4 pt-4 border-t border-gray-200">
                 <div className="flex items-start gap-3">
                   <button
