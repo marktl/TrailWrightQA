@@ -4,6 +4,8 @@
 
 Empower BA and QA staff to create professional browser automation tests without writing code. Choose your approach: let AI drive autonomously, guide it step-by-step through chat or record directly through interaction in the browser.
 
+TrailWrightQA **requires** a valid API key from one of the supported LLM providers (e.g. OpenAI, Gemini, or Anthropic) to generate tests.
+
 ## Features
 
 - 🤖 **AI Self-Driving Mode** - Give AI a goal and watch it autonomously build complete tests
